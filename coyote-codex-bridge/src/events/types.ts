@@ -11,6 +11,7 @@ export type CoyoteEventType =
   | "dglab.disconnected"
   | "dglab.feedback"
   | "dglab.strength_report"
+  | "dglab.test"
   | "safety.armed"
   | "safety.disarmed"
   | "safety.panic";
@@ -31,6 +32,7 @@ export type SimpleEvent = BaseEvent & {
     | "dglab.disconnected"
     | "dglab.feedback"
     | "dglab.strength_report"
+    | "dglab.test"
     | "safety.armed"
     | "safety.disarmed"
     | "safety.panic";

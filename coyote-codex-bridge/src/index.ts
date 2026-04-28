@@ -5,6 +5,7 @@ import { EventBus } from "./events/bus.js";
 import { buildServer } from "./proxy/server.js";
 import { DryRunSink } from "./shock/dryRunSink.js";
 import { ShockEngine } from "./shock/engine.js";
+import { ShockPlanStore } from "./shock/planStore.js";
 import { ShockPolicy } from "./shock/policy.js";
 import { SafetyGate } from "./shock/safety.js";
 
@@ -14,9 +15,10 @@ const safety = new SafetyGate(config.safety);
 const policy = new ShockPolicy(config.policy);
 const dglab = config.dglab.enabled ? new DglabController(config.dglab, bus) : undefined;
 const sink = dglab ? new DglabSink(dglab) : new DryRunSink();
-new ShockEngine(bus, policy, safety, sink);
+const shockPlans = new ShockPlanStore(config.privacy.recent_event_limit);
+new ShockEngine(bus, policy, safety, sink, shockPlans);
 
-const app = buildServer({ config, bus, safety, policy, dglab });
+const app = buildServer({ config, bus, safety, policy, dglab, shockPlans });
 
 if (config.safety.panic_zero_on_exit) {
   const shutdown = async (signal: string) => {

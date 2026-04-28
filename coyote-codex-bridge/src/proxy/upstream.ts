@@ -24,7 +24,8 @@ export interface UpstreamRequest {
 }
 
 type UpstreamConfig = AppConfig["upstream"];
-type ChatEndpoint = "chat" | "responses";
+type TextEndpoint = "chat" | "responses" | "completions";
+type ChatEndpoint = Exclude<TextEndpoint, "completions">;
 
 interface ChatRequest {
   model?: string;
@@ -40,6 +41,23 @@ interface ChatRequest {
   tool_choice?: unknown;
   input?: unknown;
   instructions?: unknown;
+}
+
+interface CompletionRequest {
+  model?: string;
+  prompt?: unknown;
+  stream?: boolean;
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  max_output_tokens?: number;
+  stop?: string | string[];
+}
+
+interface EmbeddingRequest {
+  model?: string;
+  input?: unknown;
 }
 
 interface ChatMessage {
@@ -67,22 +85,53 @@ interface NativeTextResponse {
   totalTokens?: number;
 }
 
+interface OpenAiModelSummary {
+  id: string;
+  object: "model";
+  created: number;
+  owned_by: string;
+}
+
 export class UpstreamClient {
   constructor(private readonly config: UpstreamConfig) {}
 
   async request(input: UpstreamRequest): Promise<Response> {
-    const endpoint = detectChatEndpoint(input.path);
-    if (this.config.protocol === "openai" || !endpoint || input.method.toUpperCase() !== "POST") {
+    if (this.config.protocol === "openai") {
       return this.passThrough(input);
     }
 
-    const body = parseRequestBody(input.body);
-    const chatBody = endpoint === "responses" ? responsesToChatBody(body) : body;
-
-    if (this.config.protocol === "anthropic") {
-      return this.requestAnthropic(input, chatBody, endpoint);
+    if (input.method.toUpperCase() === "GET" && input.path === "/v1/models") {
+      return this.listModels(input);
     }
-    return this.requestGemini(input, chatBody, endpoint);
+
+    const modelId = detectModelRetrieve(input.path);
+    if (input.method.toUpperCase() === "GET" && modelId) {
+      return this.retrieveModel(input, modelId);
+    }
+
+    const endpoint = detectChatEndpoint(input.path);
+    if (endpoint && input.method.toUpperCase() === "POST") {
+      const body = parseRequestBody(input.body);
+      const chatBody = endpoint === "responses" ? responsesToChatBody(body) : body;
+
+      if (this.config.protocol === "anthropic") {
+        return this.requestAnthropic(input, chatBody, endpoint);
+      }
+      return this.requestGemini(input, chatBody, endpoint);
+    }
+
+    if (input.path === "/v1/completions" && input.method.toUpperCase() === "POST") {
+      return this.requestCompletion(input, parseCompletionBody(input.body));
+    }
+
+    if (input.path === "/v1/embeddings" && input.method.toUpperCase() === "POST") {
+      if (this.config.protocol === "gemini") {
+        return this.requestGeminiEmbeddings(input, parseEmbeddingBody(input.body));
+      }
+      return unsupportedResponse("anthropic", input.path);
+    }
+
+    return this.passThroughNative(input);
   }
 
   private async passThrough(input: UpstreamRequest): Promise<Response> {
@@ -99,7 +148,110 @@ export class UpstreamClient {
     return fetchWithTimeout(url, input, headers, this.config.timeout_ms);
   }
 
-  private async requestAnthropic(input: UpstreamRequest, body: ChatRequest, endpoint: ChatEndpoint): Promise<Response> {
+  private async passThroughNative(input: UpstreamRequest): Promise<Response> {
+    const path = this.config.protocol === "gemini" ? geminiNativePath(input.path) : input.path;
+    const url = new URL(path + input.query, normalizedBaseUrl(this.config.base_url));
+    const headers = copyClientHeaders(input.headers);
+    headers.delete("authorization");
+
+    const apiKey = resolveApiKey(this.config) ?? bearerToken(input.headers);
+    if (this.config.protocol === "anthropic") {
+      if (apiKey && !headers.has("x-api-key")) {
+        headers.set("x-api-key", apiKey);
+      }
+      if (!headers.has("anthropic-version")) {
+        headers.set("anthropic-version", this.config.anthropic_version);
+      }
+    } else if (apiKey && !headers.has("x-goog-api-key")) {
+      headers.set("x-goog-api-key", apiKey);
+    }
+
+    return fetchWithTimeout(url, input, headers, this.config.timeout_ms);
+  }
+
+  private async listModels(input: UpstreamRequest): Promise<Response> {
+    if (this.config.protocol === "anthropic") {
+      return this.listAnthropicModels(input);
+    }
+    return this.listGeminiModels(input);
+  }
+
+  private async retrieveModel(input: UpstreamRequest, modelId: string): Promise<Response> {
+    if (this.config.protocol === "anthropic") {
+      return this.retrieveAnthropicModel(input, modelId);
+    }
+    return this.retrieveGeminiModel(input, modelId);
+  }
+
+  private async listAnthropicModels(input: UpstreamRequest): Promise<Response> {
+    const url = new URL("v1/models" + input.query, normalizedBaseUrl(this.config.base_url));
+    const headers = new Headers({
+      accept: "application/json",
+      "anthropic-version": this.config.anthropic_version
+    });
+    const apiKey = resolveApiKey(this.config);
+    if (apiKey) {
+      headers.set("x-api-key", apiKey);
+    }
+
+    const upstream = await fetchWithTimeout(url, { ...input, body: undefined }, headers, this.config.timeout_ms);
+    if (!upstream.ok) {
+      return upstream;
+    }
+    return jsonResponse(toOpenAiModelsResponse(anthropicModelsToOpenAi((await upstream.json()) as unknown)));
+  }
+
+  private async retrieveAnthropicModel(input: UpstreamRequest, modelId: string): Promise<Response> {
+    const url = new URL(`v1/models/${encodeURIComponent(modelId)}`, normalizedBaseUrl(this.config.base_url));
+    const headers = new Headers({
+      accept: "application/json",
+      "anthropic-version": this.config.anthropic_version
+    });
+    const apiKey = resolveApiKey(this.config) ?? bearerToken(input.headers);
+    if (apiKey) {
+      headers.set("x-api-key", apiKey);
+    }
+
+    const upstream = await fetchWithTimeout(url, { ...input, body: undefined }, headers, this.config.timeout_ms);
+    if (!upstream.ok) {
+      return upstream;
+    }
+    const models = anthropicModelsToOpenAi({ data: [(await upstream.json()) as unknown] });
+    return models[0] ? jsonResponse(models[0]) : upstream;
+  }
+
+  private async listGeminiModels(input: UpstreamRequest): Promise<Response> {
+    const url = new URL("models" + input.query, normalizedBaseUrl(this.config.base_url));
+    const headers = new Headers({ accept: "application/json" });
+    const apiKey = resolveApiKey(this.config);
+    if (apiKey) {
+      headers.set("x-goog-api-key", apiKey);
+    }
+
+    const upstream = await fetchWithTimeout(url, { ...input, body: undefined }, headers, this.config.timeout_ms);
+    if (!upstream.ok) {
+      return upstream;
+    }
+    return jsonResponse(toOpenAiModelsResponse(geminiModelsToOpenAi((await upstream.json()) as unknown)));
+  }
+
+  private async retrieveGeminiModel(input: UpstreamRequest, modelId: string): Promise<Response> {
+    const url = new URL(geminiModelPath(modelId), normalizedBaseUrl(this.config.base_url));
+    const headers = new Headers({ accept: "application/json" });
+    const apiKey = resolveApiKey(this.config) ?? bearerToken(input.headers);
+    if (apiKey) {
+      headers.set("x-goog-api-key", apiKey);
+    }
+
+    const upstream = await fetchWithTimeout(url, { ...input, body: undefined }, headers, this.config.timeout_ms);
+    if (!upstream.ok) {
+      return upstream;
+    }
+    const models = geminiModelsToOpenAi({ models: [(await upstream.json()) as unknown] });
+    return models[0] ? jsonResponse(models[0]) : upstream;
+  }
+
+  private async requestAnthropic(input: UpstreamRequest, body: ChatRequest, endpoint: TextEndpoint): Promise<Response> {
     const url = new URL("v1/messages", normalizedBaseUrl(this.config.base_url));
     const apiKey = resolveApiKey(this.config);
     const headers = new Headers({
@@ -125,13 +277,13 @@ export class UpstreamClient {
       return transformAnthropicStream(upstream, body, endpoint);
     }
     const native = anthropicToTextResponse((await upstream.json()) as Record<string, unknown>, body.model);
-    return jsonResponse(endpoint === "chat" ? toOpenAiChatResponse(native) : toOpenAiResponsesResponse(native));
+    return jsonResponse(toOpenAiTextResponse(native, endpoint));
   }
 
-  private async requestGemini(input: UpstreamRequest, body: ChatRequest, endpoint: ChatEndpoint): Promise<Response> {
+  private async requestGemini(input: UpstreamRequest, body: ChatRequest, endpoint: TextEndpoint): Promise<Response> {
     const model = body.model ?? "gemini-2.0-flash";
     const action = body.stream ? "streamGenerateContent" : "generateContent";
-    const url = new URL(`models/${encodeURIComponent(model)}:${action}`, normalizedBaseUrl(this.config.base_url));
+    const url = new URL(`${geminiModelPath(model)}:${action}`, normalizedBaseUrl(this.config.base_url));
     if (body.stream) {
       url.searchParams.set("alt", "sse");
     }
@@ -159,7 +311,70 @@ export class UpstreamClient {
       return transformGeminiStream(upstream, body, endpoint);
     }
     const native = geminiToTextResponse((await upstream.json()) as Record<string, unknown>, body.model);
-    return jsonResponse(endpoint === "chat" ? toOpenAiChatResponse(native) : toOpenAiResponsesResponse(native));
+    return jsonResponse(toOpenAiTextResponse(native, endpoint));
+  }
+
+  private async requestCompletion(input: UpstreamRequest, body: CompletionRequest): Promise<Response> {
+    const chatBody = completionToChatBody(body);
+    if (this.config.protocol === "anthropic") {
+      const upstream = await this.requestAnthropic(input, chatBody, "completions");
+      return upstream;
+    }
+    return this.requestGemini(input, chatBody, "completions");
+  }
+
+  private async requestGeminiEmbeddings(input: UpstreamRequest, body: EmbeddingRequest): Promise<Response> {
+    const model = body.model ?? "text-embedding-004";
+    const inputs = normalizeEmbeddingInputs(body.input);
+    const apiKey = resolveApiKey(this.config) ?? bearerToken(input.headers);
+    const headers = new Headers({
+      "content-type": "application/json",
+      accept: "application/json"
+    });
+    if (apiKey) {
+      headers.set("x-goog-api-key", apiKey);
+    }
+
+    if (inputs.length <= 1) {
+      const url = new URL(`${geminiModelPath(model)}:embedContent`, normalizedBaseUrl(this.config.base_url));
+      const upstream = await fetchWithTimeout(
+        url,
+        {
+          ...input,
+          body: Buffer.from(JSON.stringify({ content: { parts: [{ text: inputs[0] ?? "" }] } }))
+        },
+        headers,
+        this.config.timeout_ms
+      );
+      if (!upstream.ok) {
+        return upstream;
+      }
+      return jsonResponse(toOpenAiEmbeddingsResponse([(await upstream.json()) as unknown], model));
+    }
+
+    const url = new URL(`${geminiModelPath(model)}:batchEmbedContents`, normalizedBaseUrl(this.config.base_url));
+    const upstream = await fetchWithTimeout(
+      url,
+      {
+        ...input,
+        body: Buffer.from(
+          JSON.stringify({
+            requests: inputs.map((text) => ({
+              model: geminiModelPath(model),
+              content: { parts: [{ text }] }
+            }))
+          })
+        )
+      },
+      headers,
+      this.config.timeout_ms
+    );
+    if (!upstream.ok) {
+      return upstream;
+    }
+    const payload = (await upstream.json()) as unknown;
+    const embeddings = isRecord(payload) && Array.isArray(payload.embeddings) ? payload.embeddings : [];
+    return jsonResponse(toOpenAiEmbeddingsResponse(embeddings, model));
   }
 }
 
@@ -167,6 +382,11 @@ function detectChatEndpoint(path: string): ChatEndpoint | undefined {
   if (path === "/v1/chat/completions") return "chat";
   if (path === "/v1/responses") return "responses";
   return undefined;
+}
+
+function detectModelRetrieve(path: string): string | undefined {
+  const match = path.match(/^\/v1\/models\/([^/?]+)$/);
+  return match ? decodeURIComponent(match[1]) : undefined;
 }
 
 function copyClientHeaders(source: Record<string, string | string[] | undefined>): Headers {
@@ -216,6 +436,22 @@ function parseRequestBody(body: Buffer | undefined): ChatRequest {
   return isRecord(parsed) ? (parsed as ChatRequest) : {};
 }
 
+function parseCompletionBody(body: Buffer | undefined): CompletionRequest {
+  if (!body || body.byteLength === 0) {
+    return {};
+  }
+  const parsed = JSON.parse(body.toString("utf8")) as unknown;
+  return isRecord(parsed) ? (parsed as CompletionRequest) : {};
+}
+
+function parseEmbeddingBody(body: Buffer | undefined): EmbeddingRequest {
+  if (!body || body.byteLength === 0) {
+    return {};
+  }
+  const parsed = JSON.parse(body.toString("utf8")) as unknown;
+  return isRecord(parsed) ? (parsed as EmbeddingRequest) : {};
+}
+
 function responsesToChatBody(body: ChatRequest): ChatRequest {
   const messages: ChatMessage[] = [];
   if (typeof body.instructions === "string" && body.instructions.trim()) {
@@ -239,6 +475,33 @@ function responsesToChatBody(body: ChatRequest): ChatRequest {
     max_tokens: body.max_output_tokens ?? body.max_tokens,
     stream: body.stream === true
   };
+}
+
+function completionToChatBody(body: CompletionRequest): ChatRequest {
+  return {
+    model: body.model,
+    messages: [{ role: "user", content: promptToText(body.prompt) }],
+    stream: body.stream === true,
+    temperature: body.temperature,
+    top_p: body.top_p,
+    max_tokens: body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens,
+    stop: body.stop
+  };
+}
+
+function promptToText(prompt: unknown): string {
+  if (typeof prompt === "string") {
+    return prompt;
+  }
+  if (Array.isArray(prompt)) {
+    if (prompt.every((item) => typeof item === "string")) {
+      return prompt.join("\n");
+    }
+    if (prompt.every((item) => typeof item === "number")) {
+      return prompt.join(" ");
+    }
+  }
+  return "";
 }
 
 function toAnthropicRequest(body: ChatRequest): Record<string, unknown> {
@@ -464,6 +727,34 @@ function toOpenAiChatResponse(native: NativeTextResponse): Record<string, unknow
   };
 }
 
+function toOpenAiTextResponse(native: NativeTextResponse, endpoint: TextEndpoint): Record<string, unknown> {
+  if (endpoint === "chat") {
+    return toOpenAiChatResponse(native);
+  }
+  if (endpoint === "responses") {
+    return toOpenAiResponsesResponse(native);
+  }
+  return toOpenAiCompletionResponse(native);
+}
+
+function toOpenAiCompletionResponse(native: NativeTextResponse): Record<string, unknown> {
+  return {
+    id: `cmpl-${randomId()}`,
+    object: "text_completion",
+    created: nowSeconds(),
+    model: native.model,
+    choices: [
+      {
+        text: native.text,
+        index: 0,
+        logprobs: null,
+        finish_reason: native.finishReason ?? "stop"
+      }
+    ],
+    usage: toOpenAiUsage(native)
+  };
+}
+
 function toOpenAiResponsesResponse(native: NativeTextResponse): Record<string, unknown> {
   const id = `resp_${randomId()}`;
   return {
@@ -486,6 +777,22 @@ function toOpenAiResponsesResponse(native: NativeTextResponse): Record<string, u
   };
 }
 
+function toOpenAiEmbeddingsResponse(embeddings: unknown[], model: string): Record<string, unknown> {
+  return {
+    object: "list",
+    data: embeddings.map((embedding, index) => ({
+      object: "embedding",
+      embedding: readGeminiEmbeddingValues(embedding),
+      index
+    })),
+    model,
+    usage: {
+      prompt_tokens: 0,
+      total_tokens: 0
+    }
+  };
+}
+
 function toOpenAiUsage(native: NativeTextResponse): Record<string, number | undefined> {
   return {
     prompt_tokens: native.promptTokens,
@@ -494,8 +801,107 @@ function toOpenAiUsage(native: NativeTextResponse): Record<string, number | unde
   };
 }
 
-function transformAnthropicStream(upstream: Response, body: ChatRequest, endpoint: ChatEndpoint): Response {
-  const id = endpoint === "chat" ? `chatcmpl-${randomId()}` : `resp_${randomId()}`;
+function toOpenAiModelsResponse(data: OpenAiModelSummary[]): Record<string, unknown> {
+  return {
+    object: "list",
+    data
+  };
+}
+
+function anthropicModelsToOpenAi(payload: unknown): OpenAiModelSummary[] {
+  const models = isRecord(payload) && Array.isArray(payload.data) ? payload.data.filter(isRecord) : [];
+  return models.flatMap((model) => {
+    const id = readModelId(model.id);
+    if (!id) return [];
+    return [
+      {
+        id,
+        object: "model" as const,
+        created: readCreatedSeconds(model.created_at),
+        owned_by: "anthropic"
+      }
+    ];
+  });
+}
+
+function geminiModelsToOpenAi(payload: unknown): OpenAiModelSummary[] {
+  const models = isRecord(payload) && Array.isArray(payload.models) ? payload.models.filter(isRecord) : [];
+  return models.flatMap((model) => {
+    const id = readGeminiModelId(model.name);
+    if (!id || !supportsGeminiGeneration(model)) return [];
+    return [
+      {
+        id,
+        object: "model" as const,
+        created: 0,
+        owned_by: "google"
+      }
+    ];
+  });
+}
+
+function readModelId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readGeminiModelId(value: unknown): string | undefined {
+  const id = readModelId(value);
+  return id?.startsWith("models/") ? id.slice("models/".length) : id;
+}
+
+function geminiModelPath(model: string): string {
+  const name = model.startsWith("models/") ? model : `models/${model}`;
+  return name
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
+
+function supportsGeminiGeneration(model: Record<string, unknown>): boolean {
+  if (!Array.isArray(model.supportedGenerationMethods)) {
+    return true;
+  }
+  return model.supportedGenerationMethods.some(
+    (method) => method === "generateContent" || method === "streamGenerateContent"
+  );
+}
+
+function normalizeEmbeddingInputs(input: unknown): string[] {
+  if (typeof input === "string") {
+    return [input];
+  }
+  if (!Array.isArray(input)) {
+    return [""];
+  }
+  if (input.every((item) => typeof item === "string")) {
+    return input as string[];
+  }
+  if (input.every((item) => typeof item === "number")) {
+    return [(input as number[]).join(" ")];
+  }
+  if (input.every((item) => Array.isArray(item) && item.every((token) => typeof token === "number"))) {
+    return (input as number[][]).map((tokens) => tokens.join(" "));
+  }
+  return input.map((item) => (typeof item === "string" ? item : ""));
+}
+
+function readGeminiEmbeddingValues(embedding: unknown): number[] {
+  const source = isRecord(embedding) && isRecord(embedding.embedding) ? embedding.embedding : embedding;
+  const values = isRecord(source) && Array.isArray(source.values) ? source.values : [];
+  return values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+}
+
+function readCreatedSeconds(value: unknown): number {
+  if (typeof value !== "string") {
+    return 0;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : 0;
+}
+
+function transformAnthropicStream(upstream: Response, body: ChatRequest, endpoint: TextEndpoint): Response {
+  const id =
+    endpoint === "chat" ? `chatcmpl-${randomId()}` : endpoint === "completions" ? `cmpl-${randomId()}` : `resp_${randomId()}`;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const writer = new SseWriter(controller);
@@ -510,7 +916,7 @@ function transformAnthropicStream(upstream: Response, body: ChatRequest, endpoin
       try {
         if (endpoint === "responses") {
           writer.responseCreated(id, body.model);
-        } else {
+        } else if (endpoint === "chat") {
           writer.chatChunk(id, body.model, { role: "assistant" });
         }
 
@@ -546,8 +952,9 @@ function transformAnthropicStream(upstream: Response, body: ChatRequest, endpoin
   return sseResponse(stream);
 }
 
-function transformGeminiStream(upstream: Response, body: ChatRequest, endpoint: ChatEndpoint): Response {
-  const id = endpoint === "chat" ? `chatcmpl-${randomId()}` : `resp_${randomId()}`;
+function transformGeminiStream(upstream: Response, body: ChatRequest, endpoint: TextEndpoint): Response {
+  const id =
+    endpoint === "chat" ? `chatcmpl-${randomId()}` : endpoint === "completions" ? `cmpl-${randomId()}` : `resp_${randomId()}`;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const writer = new SseWriter(controller);
@@ -562,7 +969,7 @@ function transformGeminiStream(upstream: Response, body: ChatRequest, endpoint: 
       try {
         if (endpoint === "responses") {
           writer.responseCreated(id, body.model);
-        } else {
+        } else if (endpoint === "chat") {
           writer.chatChunk(id, body.model, { role: "assistant" });
         }
 
@@ -620,9 +1027,13 @@ class SseWriter {
     });
   }
 
-  textDelta(endpoint: ChatEndpoint, id: string, model: string | undefined, text: string): void {
+  textDelta(endpoint: TextEndpoint, id: string, model: string | undefined, text: string): void {
     if (endpoint === "chat") {
       this.chatChunk(id, model, { content: text });
+      return;
+    }
+    if (endpoint === "completions") {
+      this.completionChunk(id, model, text);
       return;
     }
     this.writeEvent("response.output_text.delta", {
@@ -634,9 +1045,13 @@ class SseWriter {
     });
   }
 
-  completed(endpoint: ChatEndpoint, id: string, model: string | undefined): void {
+  completed(endpoint: TextEndpoint, id: string, model: string | undefined): void {
     if (endpoint === "chat") {
       this.chatChunk(id, model, {}, "stop");
+      return;
+    }
+    if (endpoint === "completions") {
+      this.completionChunk(id, model, "", "stop");
       return;
     }
     this.writeEvent("response.completed", {
@@ -652,8 +1067,8 @@ class SseWriter {
     });
   }
 
-  done(endpoint: ChatEndpoint): void {
-    if (endpoint === "chat") {
+  done(endpoint: TextEndpoint): void {
+    if (endpoint === "chat" || endpoint === "completions") {
       this.writeRaw("data: [DONE]\n\n");
     }
   }
@@ -664,6 +1079,21 @@ class SseWriter {
 
   private writeData(payload: Record<string, unknown>): void {
     this.writeRaw(`data: ${JSON.stringify(payload)}\n\n`);
+  }
+
+  private completionChunk(
+    id: string,
+    model: string | undefined,
+    text: string,
+    finishReason: string | null = null
+  ): void {
+    this.writeData({
+      id,
+      object: "text_completion",
+      created: nowSeconds(),
+      model,
+      choices: [{ text, index: 0, logprobs: null, finish_reason: finishReason }]
+    });
   }
 
   private writeEvent(event: string, payload: Record<string, unknown>): void {
@@ -707,15 +1137,56 @@ function sseResponse(stream: ReadableStream<Uint8Array>): Response {
   });
 }
 
-function jsonResponse(payload: Record<string, unknown>): Response {
+function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
     status: 200,
     headers: { "content-type": "application/json; charset=utf-8" }
   });
 }
 
+function unsupportedResponse(protocol: string, path: string): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        type: "unsupported_endpoint",
+        message: `${protocol} does not support an OpenAI-compatible adapter for ${path}`
+      }
+    }),
+    {
+      status: 501,
+      headers: { "content-type": "application/json; charset=utf-8" }
+    }
+  );
+}
+
 function resolveApiKey(config: UpstreamConfig): string | undefined {
-  return config.api_key || process.env[config.api_key_env];
+  return config.api_key;
+}
+
+function bearerToken(headers: Record<string, string | string[] | undefined>): string | undefined {
+  const value = headers.authorization ?? headers.Authorization;
+  const authorization = Array.isArray(value) ? value[0] : value;
+  const match = authorization?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1];
+}
+
+function geminiNativePath(path: string): string {
+  if (path.startsWith("/upload/")) {
+    return path;
+  }
+  if (path.startsWith("/v1/")) {
+    return path.slice("/v1/".length);
+  }
+  if (path === "/v1") {
+    return "";
+  }
+  if (path.startsWith("/v1beta/")) {
+    return path.slice("/v1beta/".length);
+  }
+  if (path.startsWith("/")) {
+    return path.slice(1);
+  }
+  return path;
 }
 
 function normalizedBaseUrl(baseUrl: string): string {

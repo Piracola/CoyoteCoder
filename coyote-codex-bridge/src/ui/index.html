@@ -13,20 +13,33 @@
         <p id="upstreamText">本地控制台</p>
       </div>
       <div class="status-strip" aria-live="polite">
-        <span class="pill" id="dryRunPill">Dry-run</span>
+        <span class="pill" id="dryRunPill">预览模式</span>
         <span class="pill" id="armedPill">未启动</span>
         <span class="pill" id="dglabPill">DG-LAB 未连接</span>
       </div>
     </header>
 
     <main class="layout">
+      <section class="api-notice" aria-label="下游 API 提示">
+        <strong>下游客户端 API 地址</strong>
+        <span>Base URL 填 <code>http://127.0.0.1:8787/v1</code>，API Key 默认留空，不需要设置。</span>
+      </section>
+
       <section class="panel provider-panel">
         <div class="panel-head">
           <h2>API 供应商</h2>
-          <button class="primary" id="saveProviderBtn" type="button">保存供应商</button>
+          <div class="button-row">
+            <button class="ghost" id="newProviderBtn" type="button">新建</button>
+            <button class="ghost" id="deleteProviderBtn" type="button">删除</button>
+            <button class="primary" id="saveProviderBtn" type="button">保存供应商</button>
+          </div>
         </div>
         <form id="providerForm">
           <div class="provider-grid">
+            <label>
+              当前供应商
+              <select id="providerSelect"></select>
+            </label>
             <label>
               预设
               <select id="providerPreset">
@@ -53,16 +66,8 @@
               <input id="providerBaseUrl" type="url" autocomplete="off">
             </label>
             <label>
-              API Key 环境变量
-              <input id="providerKeyEnv" type="text" autocomplete="off">
-            </label>
-            <label>
               API Key
-              <input id="providerKey" type="password" autocomplete="off" placeholder="留空则不修改">
-            </label>
-            <label>
-              Anthropic Version
-              <input id="providerAnthropicVersion" type="text" autocomplete="off">
+              <input id="providerKey" type="password" autocomplete="off" placeholder="保存在配置文件中">
             </label>
             <label>
               超时 ms
@@ -88,7 +93,7 @@
             <span></span>
           </label>
           <div>
-            <strong>Dry-run</strong>
+            <strong>预览模式</strong>
             <p>开启时只生成计划，不发送真实设备输出。</p>
           </div>
         </div>
@@ -235,6 +240,14 @@
           <span id="eventCount">0</span>
         </div>
         <div class="events" id="events"></div>
+      </section>
+
+      <section class="panel plans-panel">
+        <div class="panel-head">
+          <h2>最近计划</h2>
+          <span id="planCount">0</span>
+        </div>
+        <div class="shock-plans" id="shockPlans"></div>
       </section>
     </main>
 

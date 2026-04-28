@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { networkInterfaces } from "node:os";
 import WebSocket from "ws";
 import type { AppConfig, Channel } from "../config/schema.js";
 import type { EventBus } from "../events/bus.js";
@@ -227,8 +228,19 @@ export class DglabController {
 
   private qrSocketUrl(): string {
     const configured = new URL(this.config.socket_url);
-    configured.hostname = this.config.qr_host;
+    configured.hostname = this.config.qr_host === "auto" ? inferLanHost() : this.config.qr_host;
     configured.port = String(this.config.qr_port);
     return configured.toString();
   }
+}
+
+function inferLanHost(): string {
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family === "IPv4" && !address.internal) {
+        return address.address;
+      }
+    }
+  }
+  return "127.0.0.1";
 }

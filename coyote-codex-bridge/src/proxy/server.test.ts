@@ -1,8 +1,13 @@
 import { createServer, type RequestListener, type Server } from "node:http";
 import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
+import YAML from "yaml";
 import { configSchema } from "../config/schema.js";
 import { EventBus } from "../events/bus.js";
+import { ShockPlanStore } from "../shock/planStore.js";
 import { ShockPolicy } from "../shock/policy.js";
 import { SafetyGate } from "../shock/safety.js";
 import { buildServer } from "./server.js";
@@ -27,12 +32,19 @@ async function createMockUpstream(handler: RequestListener) {
 async function createProxy(baseUrl: string, upstreamOverrides: Record<string, unknown> = {}) {
   const config = configSchema.parse({ upstream: { base_url: baseUrl, ...upstreamOverrides } });
   const bus = new EventBus(config.privacy.recent_event_limit);
-  const app = buildServer({ config, bus, safety: new SafetyGate(config.safety), policy: new ShockPolicy(config.policy) });
+  const shockPlans = new ShockPlanStore(config.privacy.recent_event_limit);
+  const app = buildServer({
+    config,
+    bus,
+    safety: new SafetyGate(config.safety),
+    policy: new ShockPolicy(config.policy),
+    shockPlans
+  });
   servers.push(app.server);
   await app.listen({ host: "127.0.0.1", port: 0 });
   const address = app.server.address();
   if (!address || typeof address === "string") throw new Error("missing proxy port");
-  return { baseUrl: `http://127.0.0.1:${address.port}`, bus };
+  return { baseUrl: `http://127.0.0.1:${address.port}`, bus, shockPlans };
 }
 
 describe("proxy server", () => {
@@ -46,6 +58,89 @@ describe("proxy server", () => {
 
     const response = await fetch(`${proxy.baseUrl}/v1/models`);
     expect(await response.json()).toEqual({ object: "list" });
+    expect(proxy.bus.getRecent()).toEqual([]);
+  });
+
+  it("adapts Anthropic model lists to OpenAI-compatible model lists", async () => {
+    const upstream = await createMockUpstream((req, res) => {
+      expect(req.url).toBe("/v1/models");
+      expect(req.headers["x-api-key"]).toBe("anthropic-test");
+      expect(req.headers["anthropic-version"]).toBe("2023-06-01");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          data: [
+            {
+              id: "claude-3-5-sonnet-latest",
+              type: "model",
+              display_name: "Claude 3.5 Sonnet",
+              created_at: "2024-10-22T00:00:00Z"
+            }
+          ],
+          has_more: false
+        })
+      );
+    });
+    const proxy = await createProxy(upstream, {
+      protocol: "anthropic",
+      api_key: "anthropic-test"
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/models`);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({
+      object: "list",
+      data: [
+        {
+          id: "claude-3-5-sonnet-latest",
+          object: "model",
+          created: 1729555200,
+          owned_by: "anthropic"
+        }
+      ]
+    });
+    expect(proxy.bus.getRecent()).toEqual([]);
+  });
+
+  it("adapts Gemini model lists to OpenAI-compatible model lists", async () => {
+    const upstream = await createMockUpstream((req, res) => {
+      expect(req.url).toBe("/models");
+      expect(req.headers["x-goog-api-key"]).toBe("gemini-test");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          models: [
+            {
+              name: "models/gemini-2.0-flash",
+              displayName: "Gemini 2.0 Flash",
+              supportedGenerationMethods: ["generateContent", "countTokens"]
+            },
+            {
+              name: "models/text-embedding-004",
+              displayName: "Text Embedding 004",
+              supportedGenerationMethods: ["embedContent"]
+            }
+          ]
+        })
+      );
+    });
+    const proxy = await createProxy(upstream, {
+      protocol: "gemini",
+      api_key: "gemini-test"
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/models`);
+    expect(await response.json()).toEqual({
+      object: "list",
+      data: [
+        {
+          id: "gemini-2.0-flash",
+          object: "model",
+          created: 0,
+          owned_by: "google"
+        }
+      ]
+    });
     expect(proxy.bus.getRecent()).toEqual([]);
   });
 
@@ -86,6 +181,53 @@ describe("proxy server", () => {
 
     expect(await response.text()).toContain("[DONE]");
     expect(proxy.bus.getRecent().map((event) => event.type)).toContain("response.chunk");
+  });
+
+  it("exposes recent shock plans", async () => {
+    const upstream = await createMockUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const proxy = await createProxy(upstream);
+    proxy.shockPlans.add({
+      timestamp: 1_000,
+      eventType: "request.started",
+      input: { kind: "shock.plan", channel: "A", intensity: 0.08, durationMs: 120, reason: "request.started" },
+      output: { kind: "shock.plan", channel: "A", intensity: 0.08, durationMs: 120, reason: "request.started" },
+      outcome: "sent",
+      safety: new SafetyGate(configSchema.parse({}).safety).getStatus()
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/shock/recent?limit=1`);
+    const payload = await response.json();
+    expect(payload.plans).toMatchObject([{ eventType: "request.started", outcome: "sent" }]);
+  });
+
+  it("records UI test shock attempts when DG-LAB is unavailable", async () => {
+    const upstream = await createMockUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const proxy = await createProxy(upstream);
+
+    const response = await fetch(`${proxy.baseUrl}/ui/test-shock`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ channel: "A", intensity: 0.05, durationMs: 220 })
+    });
+
+    const payload = await response.json();
+    expect(payload.testShock).toMatchObject({
+      outcome: "error",
+      message: "DG-LAB 未启用"
+    });
+    expect(proxy.shockPlans.getRecent()).toMatchObject([
+      {
+        eventType: "dglab.test",
+        outcome: "error",
+        error: "dglab_disabled"
+      }
+    ]);
   });
 
   it("adapts OpenAI chat completions to Anthropic messages", async () => {
@@ -180,38 +322,189 @@ describe("proxy server", () => {
     });
   });
 
+  it("passes through Anthropic native endpoints with Anthropic headers", async () => {
+    const upstream = await createMockUpstream((req, res) => {
+      expect(req.url).toBe("/v1/files?limit=1");
+      expect(req.headers["x-api-key"]).toBe("anthropic-test");
+      expect(req.headers["anthropic-version"]).toBe("2023-06-01");
+      expect(req.headers.authorization).toBeUndefined();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [] }));
+    });
+    const proxy = await createProxy(upstream, {
+      protocol: "anthropic",
+      api_key: "anthropic-test"
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/files?limit=1`, {
+      headers: { authorization: "Bearer downstream-key" }
+    });
+
+    expect(await response.json()).toEqual({ data: [] });
+  });
+
+  it("passes through Gemini native endpoints by stripping OpenAI v1 prefixes", async () => {
+    const upstream = await createMockUpstream((req, res) => {
+      expect(req.url).toBe("/v1beta/files?pageSize=1");
+      expect(req.headers["x-goog-api-key"]).toBe("gemini-test");
+      expect(req.headers.authorization).toBeUndefined();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ files: [] }));
+    });
+    const proxy = await createProxy(`${upstream}/v1beta`, {
+      protocol: "gemini",
+      api_key: "gemini-test"
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/files?pageSize=1`, {
+      headers: { authorization: "Bearer downstream-key" }
+    });
+
+    expect(await response.json()).toEqual({ files: [] });
+  });
+
+  it("adapts OpenAI completions to Anthropic messages", async () => {
+    let seenBody: unknown;
+    const upstream = await createMockUpstream((req, res) => {
+      expect(req.url).toBe("/v1/messages");
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        seenBody = JSON.parse(raw);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            content: [{ type: "text", text: "completion ok" }],
+            model: "claude-mock",
+            stop_reason: "end_turn",
+            usage: { input_tokens: 3, output_tokens: 2 }
+          })
+        );
+      });
+    });
+    const proxy = await createProxy(upstream, {
+      protocol: "anthropic",
+      api_key: "anthropic-test"
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-mock", prompt: "hi", max_tokens: 12 })
+    });
+
+    const payload = await response.json();
+    expect(payload.choices[0].text).toBe("completion ok");
+    expect(seenBody).toMatchObject({
+      model: "claude-mock",
+      max_tokens: 12,
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+    });
+  });
+
+  it("adapts OpenAI embeddings to Gemini embedContent", async () => {
+    let seenBody: unknown;
+    const upstream = await createMockUpstream((req, res) => {
+      expect(req.url).toBe("/models/text-embedding-004:embedContent");
+      expect(req.headers["x-goog-api-key"]).toBe("gemini-test");
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        seenBody = JSON.parse(raw);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ embedding: { values: [0.1, 0.2, 0.3] } }));
+      });
+    });
+    const proxy = await createProxy(upstream, {
+      protocol: "gemini",
+      api_key: "gemini-test"
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/embeddings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "text-embedding-004", input: "hello" })
+    });
+
+    const payload = await response.json();
+    expect(payload.data[0]).toEqual({ object: "embedding", embedding: [0.1, 0.2, 0.3], index: 0 });
+    expect(seenBody).toEqual({ content: { parts: [{ text: "hello" }] } });
+  });
+
   it("updates upstream provider settings from the UI API", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "coyote-config-"));
+    const previousConfig = process.env.COYOTE_CONFIG;
+    const configPath = join(configDir, "config.yaml");
+    process.env.COYOTE_CONFIG = configPath;
     const upstream = await createMockUpstream((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     });
     const proxy = await createProxy(upstream);
 
-    const response = await fetch(`${proxy.baseUrl}/ui/upstream`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        upstream: {
-          name: "Local Claude",
-          protocol: "anthropic",
-          baseUrl: "https://api.anthropic.com",
-          apiKeyEnv: "ANTHROPIC_API_KEY",
-          apiKey: "secret",
-          anthropicVersion: "2023-06-01",
-          timeoutMs: 90000
-        }
-      })
-    });
+    try {
+      await fetch(`${proxy.baseUrl}/ui/upstream`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          upstream: {
+            id: "local-claude",
+            name: "Local Claude",
+            protocol: "anthropic",
+            baseUrl: "https://api.anthropic.com",
+            apiKey: "secret",
+            timeoutMs: 90000
+          }
+        })
+      });
 
-    const state = await response.json();
-    expect(state.upstream).toMatchObject({
-      name: "Local Claude",
-      protocol: "anthropic",
-      baseUrl: "https://api.anthropic.com",
-      apiKeyEnv: "ANTHROPIC_API_KEY",
-      hasApiKey: true,
-      anthropicVersion: "2023-06-01",
-      timeoutMs: 90000
-    });
+      const response = await fetch(`${proxy.baseUrl}/ui/upstream`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          upstream: {
+            id: "local-gemini",
+            name: "Local Gemini",
+            protocol: "gemini",
+            baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+            apiKey: "gemini-secret",
+            timeoutMs: 60000
+          }
+        })
+      });
+
+      const state = await response.json();
+      expect(state.upstream).toMatchObject({
+        activeProvider: "local-gemini",
+        name: "Local Gemini",
+        protocol: "gemini",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+        hasApiKey: true,
+        timeoutMs: 60000
+      });
+      expect(state.upstream.providers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "openai", name: "OpenAI" }),
+          expect.objectContaining({ id: "local-claude", name: "Local Claude", hasApiKey: true }),
+          expect.objectContaining({ id: "local-gemini", name: "Local Gemini", active: true })
+        ])
+      );
+
+      const saved = YAML.parse(await readFile(configPath, "utf8"));
+      expect(saved.upstream.active_provider).toBe("local-gemini");
+      expect(saved.upstream.providers).toHaveLength(3);
+      expect(saved.upstream.providers[1]).not.toHaveProperty("api_key_env");
+    } finally {
+      if (previousConfig === undefined) {
+        delete process.env.COYOTE_CONFIG;
+      } else {
+        process.env.COYOTE_CONFIG = previousConfig;
+      }
+      await rm(configDir, { recursive: true, force: true });
+    }
   });
 });

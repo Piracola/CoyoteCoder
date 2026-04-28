@@ -3,6 +3,9 @@
 # Node / TypeScript
 node_modules/
 dist/
+src-ui/dist/
+src-tauri/target/
+coyote-codex-bridge/src-tauri/target/
 coverage/
 *.tsbuildinfo
 
@@ -12,6 +15,7 @@ coverage/
 *.local.yml
 *.log
 .test-logs/
+.runtime/
 
 # OS / editor noise
 .DS_Store

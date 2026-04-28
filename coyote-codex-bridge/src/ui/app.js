@@ -5,12 +5,11 @@ let currentState;
 
 const fields = {
   providerPreset: $("providerPreset"),
+  providerSelect: $("providerSelect"),
   providerName: $("providerName"),
   providerProtocol: $("providerProtocol"),
   providerBaseUrl: $("providerBaseUrl"),
-  providerKeyEnv: $("providerKeyEnv"),
   providerKey: $("providerKey"),
-  providerAnthropicVersion: $("providerAnthropicVersion"),
   providerTimeout: $("providerTimeout"),
   limitA: $("limitA"),
   limitB: $("limitB"),
@@ -66,12 +65,13 @@ function render(state) {
   renderSettings(state);
   renderQr(state);
   renderEvents(state.events ?? []);
+  renderShockPlans(state.shockPlans ?? []);
 }
 
 function renderStatus(state) {
   const upstream = state.upstream ?? {};
   $("upstreamText").textContent = `上游: ${upstream.name ?? "未配置"} · ${upstream.protocol ?? "openai"} · ${upstream.baseUrl ?? ""}`;
-  setPill($("dryRunPill"), state.safety.dryRun ? "Dry-run 开启" : "真实输出", state.safety.dryRun ? "warn" : "danger");
+  setPill($("dryRunPill"), state.safety.dryRun ? "预览模式" : "设备输出", state.safety.dryRun ? "warn" : "danger");
   setPill($("armedPill"), state.safety.armed ? "反馈已启动" : "反馈已停止", state.safety.armed ? "ok" : "");
   setPill(
     $("dglabPill"),
@@ -122,14 +122,22 @@ function renderProvider(state) {
   }
 
   const upstream = state.upstream ?? {};
+  const providers = upstream.providers ?? [];
+  fields.providerSelect.innerHTML = "";
+  if (fields.providerSelect.dataset.draftId) {
+    fields.providerSelect.add(new Option(fields.providerName.value || "未保存供应商", fields.providerSelect.dataset.draftId));
+  }
+  for (const provider of providers) {
+    fields.providerSelect.add(new Option(provider.name, provider.id));
+  }
+  fields.providerSelect.value = fields.providerSelect.dataset.draftId || upstream.activeProvider || providers[0]?.id || "";
+  $("deleteProviderBtn").disabled = providers.length <= 1 || Boolean(fields.providerSelect.dataset.draftId);
   fields.providerPreset.value = matchingPreset(upstream);
   fields.providerName.value = upstream.name ?? "";
   fields.providerProtocol.value = upstream.protocol ?? "openai";
   fields.providerBaseUrl.value = upstream.baseUrl ?? "";
-  fields.providerKeyEnv.value = upstream.apiKeyEnv ?? "";
   fields.providerKey.value = "";
-  fields.providerKey.placeholder = upstream.hasApiKey ? "已配置，留空不修改" : "留空则使用环境变量";
-  fields.providerAnthropicVersion.value = upstream.anthropicVersion ?? "2023-06-01";
+  fields.providerKey.placeholder = upstream.hasApiKey ? "已配置，留空不修改" : "保存在配置文件中";
   fields.providerTimeout.value = upstream.timeoutMs ?? 120000;
 }
 
@@ -138,6 +146,19 @@ function matchingPreset(upstream) {
   if (upstream.protocol === "anthropic" && upstream.baseUrl === "https://api.anthropic.com") return "anthropic";
   if (upstream.protocol === "gemini" && upstream.baseUrl === "https://generativelanguage.googleapis.com/v1beta") return "gemini";
   return "custom";
+}
+
+function uniqueProviderId(seed, providers) {
+  const base = seed
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "custom";
+  const ids = new Set((providers ?? []).map((provider) => provider.id));
+  if (!ids.has(base)) return base;
+  let index = 2;
+  while (ids.has(`${base}-${index}`)) index += 1;
+  return `${base}-${index}`;
 }
 
 function setPulse(prefix, pulse) {
@@ -211,6 +232,45 @@ function eventDetail(event) {
   return event.requestId ?? "";
 }
 
+function renderShockPlans(plans) {
+  $("planCount").textContent = String(plans.length);
+  const container = $("shockPlans");
+  container.replaceChildren();
+
+  if (plans.length === 0) {
+    const empty = document.createElement("p");
+    empty.textContent = "暂无计划";
+    container.append(empty);
+    return;
+  }
+
+  for (const plan of [...plans].reverse()) {
+    const row = document.createElement("div");
+    row.className = `shock-plan ${plan.outcome}`;
+
+    const reason = document.createElement("strong");
+    reason.textContent = plan.eventType;
+
+    const detail = document.createElement("span");
+    detail.textContent = shockPlanDetail(plan);
+
+    const time = document.createElement("span");
+    time.textContent = new Date(plan.timestamp).toLocaleTimeString();
+
+    row.append(reason, detail, time);
+    container.append(row);
+  }
+}
+
+function shockPlanDetail(record) {
+  const plan = record.output ?? record.input;
+  const channel = plan.channel ? `${plan.channel} 通道` : "无通道";
+  const intensity = `${Math.round(Number(plan.intensity ?? 0) * 100)}%`;
+  const duration = `${plan.durationMs ?? 0}ms`;
+  const suffix = record.error ? ` · ${record.error}` : "";
+  return `${record.outcome} · ${channel} · ${intensity} · ${duration}${suffix}`;
+}
+
 function collectSettings() {
   return {
     dryRun: $("dryRunToggle").checked,
@@ -240,11 +300,10 @@ function collectSettings() {
 
 function collectProvider() {
   const payload = {
+    id: fields.providerSelect.dataset.draftId || fields.providerSelect.value,
     name: fields.providerName.value.trim(),
     protocol: fields.providerProtocol.value,
     baseUrl: fields.providerBaseUrl.value.trim(),
-    apiKeyEnv: fields.providerKeyEnv.value.trim(),
-    anthropicVersion: fields.providerAnthropicVersion.value.trim(),
     timeoutMs: numberValue(fields.providerTimeout)
   };
   if (fields.providerKey.value.trim()) {
@@ -293,25 +352,43 @@ async function runAction(label, fn) {
 }
 
 $("refreshBtn").addEventListener("click", () => refresh());
+fields.providerSelect.addEventListener("change", () => {
+  delete fields.providerSelect.dataset.draftId;
+  runAction("供应商已切换", () =>
+    api("/ui/upstream", {
+      method: "POST",
+      body: JSON.stringify({ action: "select", id: fields.providerSelect.value })
+    })
+  );
+});
+$("newProviderBtn").addEventListener("click", () => {
+  const id = uniqueProviderId("custom", currentState?.upstream?.providers ?? []);
+  fields.providerSelect.dataset.draftId = id;
+  fields.providerSelect.innerHTML = "";
+  fields.providerSelect.add(new Option("自定义供应商", id));
+  fields.providerName.value = "自定义供应商";
+  fields.providerProtocol.value = "openai";
+  fields.providerBaseUrl.value = "https://api.openai.com";
+  fields.providerKey.value = "";
+  fields.providerTimeout.value = 120000;
+  $("deleteProviderBtn").disabled = true;
+});
 $("providerPreset").addEventListener("change", () => {
   const presets = {
     openai: {
       name: "OpenAI",
       protocol: "openai",
-      baseUrl: "https://api.openai.com",
-      apiKeyEnv: "OPENAI_API_KEY"
+      baseUrl: "https://api.openai.com"
     },
     anthropic: {
       name: "Anthropic",
       protocol: "anthropic",
-      baseUrl: "https://api.anthropic.com",
-      apiKeyEnv: "ANTHROPIC_API_KEY"
+      baseUrl: "https://api.anthropic.com"
     },
     gemini: {
       name: "Gemini",
       protocol: "gemini",
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-      apiKeyEnv: "GEMINI_API_KEY"
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta"
     }
   };
   const preset = presets[$("providerPreset").value];
@@ -319,13 +396,20 @@ $("providerPreset").addEventListener("change", () => {
   fields.providerName.value = preset.name;
   fields.providerProtocol.value = preset.protocol;
   fields.providerBaseUrl.value = preset.baseUrl;
-  fields.providerKeyEnv.value = preset.apiKeyEnv;
 });
 $("saveProviderBtn").addEventListener("click", () =>
   runAction("供应商已保存", () =>
     api("/ui/upstream", {
       method: "POST",
       body: JSON.stringify(collectProvider())
+    })
+  )
+);
+$("deleteProviderBtn").addEventListener("click", () =>
+  runAction("供应商已删除", () =>
+    api("/ui/upstream", {
+      method: "POST",
+      body: JSON.stringify({ action: "delete", id: fields.providerSelect.value })
     })
   )
 );
@@ -358,7 +442,7 @@ $("qrBtn").addEventListener("click", () =>
   })
 );
 $("dryRunToggle").addEventListener("change", () =>
-  runAction("Dry-run 已更新", () =>
+  runAction("预览模式已更新", () =>
     api("/ui/settings", {
       method: "POST",
       body: JSON.stringify({ dryRun: $("dryRunToggle").checked })

@@ -3,13 +3,19 @@ server:
   port: 8787
 
 upstream:
-  name: "OpenAI"
-  protocol: "openai" # openai | anthropic | gemini
-  base_url: "https://api.openai.com"
-  api_key_env: "OPENAI_API_KEY"
-  # api_key: "" # optional local inline key; prefer env vars for shared configs
-  anthropic_version: "2023-06-01"
-  timeout_ms: 120000
+  active_provider: "openai"
+  providers:
+    - id: "openai"
+      name: "OpenAI"
+      protocol: "openai" # openai | anthropic | gemini
+      base_url: "https://api.openai.com"
+      # api_key: "" # stored locally in this config file
+      timeout_ms: 120000
+    - id: "local-compatible"
+      name: "Local Compatible"
+      protocol: "openai"
+      base_url: "http://127.0.0.1:11434/v1"
+      timeout_ms: 120000
 
 privacy:
   store_raw_content: false
@@ -47,9 +53,9 @@ policy:
     duration_ms: 180
 
 dglab:
-  enabled: false
+  enabled: true
   socket_url: "ws://127.0.0.1:9999"
-  qr_host: "127.0.0.1"
+  qr_host: "auto" # auto picks the first non-internal IPv4 address for APP scanning
   qr_port: 9999
   default_channels:
     request: "A"

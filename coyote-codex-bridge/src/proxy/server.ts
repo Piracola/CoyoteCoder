@@ -1,10 +1,12 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type { AppConfig } from "../config/schema.js";
 import { registerDglabRoutes } from "../api/dglabRoutes.js";
+import { registerShockRoutes } from "../api/shockRoutes.js";
 import { registerUiRoutes } from "../api/uiRoutes.js";
 import type { DglabController } from "../dglab/controller.js";
 import { EventBus } from "../events/bus.js";
 import type { ResponseChunkEvent } from "../events/types.js";
+import type { ShockPlanStore } from "../shock/planStore.js";
 import { shortId } from "../util/ids.js";
 import { registerControlRoutes } from "../api/controlRoutes.js";
 import type { ShockPolicy } from "../shock/policy.js";
@@ -18,11 +20,23 @@ interface ProxyContext {
   safety: SafetyGate;
   policy: ShockPolicy;
   dglab?: DglabController;
+  shockPlans?: ShockPlanStore;
 }
 
 export function buildServer(context: ProxyContext): FastifyInstance {
   const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
   const upstream = new UpstreamClient(context.config.upstream);
+
+  app.addHook("onRequest", (request, reply, done) => {
+    reply.header("access-control-allow-origin", "*");
+    reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    reply.header("access-control-allow-headers", "content-type,authorization,x-api-key,x-goog-api-key,anthropic-version");
+    if (request.method === "OPTIONS") {
+      reply.code(204).send();
+      return;
+    }
+    done();
+  });
 
   app.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) => {
     done(null, body);
@@ -50,9 +64,25 @@ export function buildServer(context: ProxyContext): FastifyInstance {
 
   registerControlRoutes(app, context.bus, context.safety);
   registerDglabRoutes(app, context.dglab);
+  registerShockRoutes(app, context.shockPlans);
   registerUiRoutes(app, context);
 
   app.all("/v1/*", async (request, reply) => {
+    await handleProxyRequest(request, reply, context, upstream);
+  });
+  app.all("/v1beta/*", async (request, reply) => {
+    await handleProxyRequest(request, reply, context, upstream);
+  });
+  app.all("/models/*", async (request, reply) => {
+    await handleProxyRequest(request, reply, context, upstream);
+  });
+  app.all("/files", async (request, reply) => {
+    await handleProxyRequest(request, reply, context, upstream);
+  });
+  app.all("/files/*", async (request, reply) => {
+    await handleProxyRequest(request, reply, context, upstream);
+  });
+  app.all("/upload/*", async (request, reply) => {
     await handleProxyRequest(request, reply, context, upstream);
   });
 

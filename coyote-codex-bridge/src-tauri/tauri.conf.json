@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CoyoteCoder",
+  "version": "0.1.0",
+  "identifier": "local.coyotecoder.bridge",
+  "build": {
+    "beforeDevCommand": "npm run ui:dev -- --host 127.0.0.1",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run ui:build:tauri",
+    "frontendDist": "../src-ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CoyoteCoder",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 980,
+        "minHeight": 720
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: http://127.0.0.1:8787; connect-src 'self' http://127.0.0.1:8787 ws://127.0.0.1:8787; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"]
+  }
+}

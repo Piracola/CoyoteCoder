@@ -1,0 +1,16 @@
+[package]
+name = "coyote-coder"
+version = "0.1.0"
+description = "CoyoteCoder desktop control console"
+authors = ["CoyoteCoder"]
+edition = "2021"
+
+[lib]
+name = "coyote_coder_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
