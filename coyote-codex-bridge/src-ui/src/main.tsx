@@ -27,9 +27,12 @@ import {
   API_BASE,
   api,
   apiUrl,
+  getRunInBackground,
+  isDesktopRuntime,
   providerFromState,
   providerFromSummary,
   settingsFromState,
+  setRunInBackground,
   type Channel,
   type ChunkPolicy,
   type ProviderDraft,
@@ -73,6 +76,7 @@ function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "ok" | "error" } | null>(null);
   const [qrVersion, setQrVersion] = useState(0);
+  const [runInBackground, setRunInBackgroundState] = useState(false);
 
   const showToast = useCallback((message: string, tone: "ok" | "error" = "ok") => {
     setToast({ message, tone });
@@ -105,6 +109,12 @@ function App() {
       window.removeEventListener("focus", onFocus);
     };
   }, [refresh]);
+
+  useEffect(() => {
+    void getRunInBackground()
+      .then(setRunInBackgroundState)
+      .catch((error) => showToast(error instanceof Error ? error.message : String(error), "error"));
+  }, [showToast]);
 
   const runAction = useCallback(
     async (key: string, success: string, action: () => Promise<UiState | void>) => {
@@ -184,7 +194,14 @@ function App() {
                 <SummaryMetric icon={<AlertTriangle size={16} />} label="拦截/错误" value={metrics.blocked} tone="danger" />
               </SectionHeader>
               <section className="grid operation-grid">
-                <RuntimePanel state={state} busy={busy} runAction={runAction} />
+                <RuntimePanel
+                  state={state}
+                  busy={busy}
+                  runInBackground={runInBackground}
+                  setRunInBackgroundState={setRunInBackgroundState}
+                  showToast={showToast}
+                  runAction={runAction}
+                />
                 <QrPanel state={state} busy={busy} qrVersion={qrVersion} setQrVersion={setQrVersion} runAction={runAction} />
               </section>
             </section>
@@ -250,12 +267,29 @@ function ApiNotice() {
 function RuntimePanel({
   state,
   busy,
+  runInBackground,
+  setRunInBackgroundState,
+  showToast,
   runAction
 }: {
   state: UiState;
   busy: string | null;
+  runInBackground: boolean;
+  setRunInBackgroundState: (value: boolean) => void;
+  showToast: (message: string, tone?: "ok" | "error") => void;
   runAction: (key: string, success: string, action: () => Promise<UiState | void>) => Promise<void>;
 }) {
+  const updateRunInBackground = async (enabled: boolean) => {
+    setRunInBackgroundState(enabled);
+    try {
+      await setRunInBackground(enabled);
+      showToast(enabled ? "已开启后台运行" : "已关闭后台运行");
+    } catch (error) {
+      setRunInBackgroundState(!enabled);
+      showToast(error instanceof Error ? error.message : String(error), "error");
+    }
+  };
+
   return (
     <section className="panel runtime-panel">
       <PanelTitle icon={<Power size={18} />} title="运行控制" />
@@ -330,6 +364,15 @@ function RuntimePanel({
           <small>只记录计划，不发送真实设备输出</small>
         </span>
       </label>
+      {isDesktopRuntime && (
+        <label className="runtime-toggle">
+          <input type="checkbox" checked={runInBackground} onChange={(event) => void updateRunInBackground(event.target.checked)} />
+          <span>
+            <strong>在后台运行</strong>
+            <small>关闭窗口后保留服务，双击托盘图标可重新打开</small>
+          </span>
+        </label>
+      )}
     </section>
   );
 }

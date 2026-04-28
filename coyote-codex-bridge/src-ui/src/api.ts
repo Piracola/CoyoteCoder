@@ -125,6 +125,7 @@ export interface SettingsDraft {
 const tauriWindow = window as Window & { __TAURI_INTERNALS__?: unknown };
 const isTauri = Boolean(tauriWindow.__TAURI_INTERNALS__);
 export const API_BASE = import.meta.env.VITE_COYOTE_API_BASE ?? (isTauri ? "http://127.0.0.1:8787" : "");
+export const isDesktopRuntime = isTauri;
 
 export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
@@ -147,6 +148,18 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw new Error(payload?.error ?? payload?.message ?? `请求失败: ${response.status}`);
   }
   return payload as T;
+}
+
+export async function getRunInBackground(): Promise<boolean> {
+  if (!isTauri) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("get_run_in_background");
+}
+
+export async function setRunInBackground(enabled: boolean): Promise<void> {
+  if (!isTauri) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_run_in_background", { enabled });
 }
 
 export function providerFromState(state: UiState): ProviderDraft {
