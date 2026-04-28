@@ -35,7 +35,7 @@ CoyoteCoder 是一个运行在本地的 LLM 代理中转工具。它位于你的
 
 ## 🔗 DG-LAB 配对与真实反馈
 
-1. 确保本地 [DG-LAB Socket V2] 服务可访问（默认地址为 `ws://127.0.0.1:9999`）。
+1. 确保本地 [DG-LAB Socket V2](https://github.com/DG-LAB-OPENSOURCE/DG-LAB-OPENSOURCE/tree/main/socket/v2) 服务可访问（默认地址为 `ws://127.0.0.1:9999`）。
 2. 在 CoyoteCoder 控制台中生成配对码，并使用**郊狼 APP** 扫描二维码完成配对。
 3. **安全调试**：建议初期在控制台保持预览模式，确认行为符合预期。
 4. **实机运行**：需要真实硬件反馈时，在控制台关闭预览模式，并点击“启动反馈”。
@@ -56,7 +56,7 @@ http://127.0.0.1:8787/ui
 
 ## 🛠️ 开发者指南
 
-关于本地开发、构建打包、接口规范及验证命令，请参阅 [DEVELOPMENT.md](https://www.google.com/search?q=./DEVELOPMENT.md)。
+关于本地开发、构建打包、接口规范及验证命令，请参阅 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 ---
 
