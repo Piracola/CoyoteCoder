@@ -1,0 +1,137 @@
+param(
+  [string]$Version = "",
+  [switch]$SkipInstall,
+  [switch]$SkipTests,
+  [switch]$NoClean
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$AppRoot = Join-Path $RepoRoot "coyote-codex-bridge"
+$PortableRoot = Join-Path $AppRoot "portable"
+$PortableDir = Join-Path $PortableRoot "CoyoteCoder"
+
+function Write-Step {
+  param([string]$Message)
+  Write-Host ""
+  Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+function Run {
+  param(
+    [string]$Command,
+    [string[]]$Arguments,
+    [string]$WorkingDirectory = $AppRoot
+  )
+
+  & $Command @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "Command failed: $Command $($Arguments -join ' ')"
+  }
+}
+
+function Normalize-Version {
+  param([string]$InputVersion)
+
+  $value = $InputVersion.Trim()
+  if ($value.StartsWith("v")) {
+    $value = $value.Substring(1)
+  }
+  if ($value -notmatch '^\d+\.\d+\.\d+([\-+][0-9A-Za-z.-]+)?$') {
+    throw "Version must look like 0.1.0, 0.1.0-beta.1, or v0.1.0."
+  }
+  return $value
+}
+
+function Require-Command {
+  param(
+    [string]$Name,
+    [string]$InstallHint
+  )
+
+  if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+    throw "Missing $Name. $InstallHint"
+  }
+}
+
+Push-Location $AppRoot
+try {
+  Require-Command "node" "Install Node.js 20+."
+  Require-Command "npm" "Install Node.js 20+."
+  Require-Command "cargo" "Install Rust stable toolchain."
+  Require-Command "link.exe" "Install Visual Studio Build Tools with the C++ desktop workload."
+
+  $packageJson = Get-Content "package.json" -Raw | ConvertFrom-Json
+  $buildVersion = if ($Version.Trim()) { Normalize-Version $Version } else { [string]$packageJson.version }
+  $zipName = "CoyoteCoder-$buildVersion-windows-portable.zip"
+  $zipPath = Join-Path $AppRoot $zipName
+
+  if ($Version.Trim()) {
+    Write-Step "Apply build version $buildVersion"
+
+    $packageJson.version = $buildVersion
+    $packageJson | ConvertTo-Json -Depth 100 | Set-Content "package.json" -Encoding utf8
+
+    $packageLockJson = Get-Content "package-lock.json" -Raw | ConvertFrom-Json -AsHashtable
+    $packageLockJson["version"] = $buildVersion
+    if ($packageLockJson.ContainsKey("packages") -and $packageLockJson["packages"].ContainsKey("")) {
+      $packageLockJson["packages"][""]["version"] = $buildVersion
+    }
+    $packageLockJson | ConvertTo-Json -Depth 100 | Set-Content "package-lock.json" -Encoding utf8
+
+    $tauriConfig = Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json
+    $tauriConfig.version = $buildVersion
+    $tauriConfig | ConvertTo-Json -Depth 100 | Set-Content "src-tauri\tauri.conf.json" -Encoding utf8
+
+    $cargoToml = Get-Content "src-tauri\Cargo.toml" -Raw
+    $cargoToml = $cargoToml -replace '(?m)^version = ".+"', "version = `"$buildVersion`""
+    Set-Content "src-tauri\Cargo.toml" $cargoToml -Encoding utf8
+  }
+
+  if (-not $SkipInstall) {
+    Write-Step "Install dependencies"
+    Run "npm" @("ci")
+  }
+
+  if (-not $SkipTests) {
+    Write-Step "Run typecheck"
+    Run "npm" @("run", "typecheck")
+
+    Write-Step "Run tests"
+    Run "npm" @("test")
+  }
+
+  Write-Step "Build API and UI"
+  Run "npm" @("run", "build")
+
+  Write-Step "Build backend sidecar"
+  Run "npx" @("--yes", "@yao-pkg/pkg", "dist/src/index.js", "--targets", "node20-win-x64", "--output", "coyote-backend.exe")
+
+  Write-Step "Build desktop app"
+  Run "npm" @("run", "tauri:build")
+
+  Write-Step "Assemble portable zip"
+  if (-not $NoClean) {
+    Remove-Item -LiteralPath $PortableDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+  }
+
+  New-Item -ItemType Directory -Force -Path $PortableDir | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $PortableDir "src-ui") | Out-Null
+
+  Copy-Item ".\src-tauri\target\release\coyote-coder.exe" (Join-Path $PortableDir "CoyoteCoder.exe") -Force
+  Copy-Item ".\coyote-backend.exe" (Join-Path $PortableDir "coyote-backend.exe") -Force
+  Copy-Item ".\config.example.yaml" (Join-Path $PortableDir "config.example.yaml") -Force
+  Copy-Item "..\README.md" (Join-Path $PortableDir "README.md") -Force
+  Copy-Item "..\CoyoteCoder.png" (Join-Path $PortableDir "CoyoteCoder.png") -Force
+  Copy-Item ".\src-ui\dist" (Join-Path $PortableDir "src-ui\dist") -Recurse -Force
+
+  Compress-Archive -Path (Join-Path $PortableDir "*") -DestinationPath $zipPath -Force
+
+  Write-Host ""
+  Write-Host "Build complete: $zipPath" -ForegroundColor Green
+} finally {
+  Pop-Location
+}

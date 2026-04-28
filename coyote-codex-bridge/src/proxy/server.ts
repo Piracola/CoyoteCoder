@@ -130,7 +130,14 @@ async function handleProxyRequest(
   }
 
   const abortController = new AbortController();
-  request.raw.on("aborted", () => abortController.abort());
+  const abort = () => abortController.abort();
+  const abortOnReplyClose = () => {
+    if (!reply.raw.writableEnded) {
+      abort();
+    }
+  };
+  request.raw.on("aborted", abort);
+  reply.raw.on("close", abortOnReplyClose);
 
   try {
     const upstreamResponse = await upstream.request({
@@ -157,7 +164,7 @@ async function handleProxyRequest(
     const contentType = upstreamResponse.headers.get("content-type") ?? "";
     const isSse = contentType.includes("text/event-stream");
     if (isSse && upstreamResponse.body) {
-      await relaySse(upstreamResponse, reply, context, requestId, bodyInfo.model, startedAt, knownEventEndpoint);
+      await relaySse(upstreamResponse, reply, context, requestId, bodyInfo.model, startedAt, knownEventEndpoint, abortController.signal);
       return;
     }
 
@@ -188,6 +195,9 @@ async function handleProxyRequest(
     if (!reply.sent) {
       reply.code(502).send({ error: "upstream_error", message });
     }
+  } finally {
+    request.raw.off("aborted", abort);
+    reply.raw.off("close", abortOnReplyClose);
   }
 }
 
@@ -198,7 +208,8 @@ async function relaySse(
   requestId: string,
   model: string | undefined,
   startedAt: number,
-  emitEvents: boolean
+  emitEvents: boolean,
+  signal: AbortSignal
 ): Promise<void> {
   const parser = new SseParser();
   const reader = upstreamResponse.body?.getReader();
@@ -214,15 +225,45 @@ async function relaySse(
   let totalTokens: number | undefined;
   let finishReason: string | undefined;
   let toolCallEmitted = false;
+  let abortEmitted = false;
+
+  const emitAborted = (message = "downstream client disconnected") => {
+    if (!emitEvents || abortEmitted) {
+      return;
+    }
+    abortEmitted = true;
+    context.bus.emit({
+      type: "response.aborted",
+      requestId,
+      timestamp: Date.now(),
+      model,
+      message
+    });
+  };
 
   reply.raw.flushHeaders?.();
 
   try {
     while (true) {
+      if (signal.aborted) {
+        await reader.cancel().catch(() => undefined);
+        emitAborted();
+        safeEnd(reply);
+        return;
+      }
+
       const { done, value } = await reader.read();
       if (done) break;
+      if (signal.aborted) {
+        await reader.cancel().catch(() => undefined);
+        emitAborted();
+        safeEnd(reply);
+        return;
+      }
 
-      reply.raw.write(Buffer.from(value));
+      if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+        reply.raw.write(Buffer.from(value));
+      }
       if (!emitEvents) continue;
 
       const now = Date.now();
@@ -263,6 +304,12 @@ async function relaySse(
         };
         context.bus.emit(chunkEvent);
       }
+    }
+
+    if (signal.aborted) {
+      emitAborted();
+      safeEnd(reply);
+      return;
     }
 
     for (const event of parser.end()) {
@@ -327,9 +374,14 @@ async function relaySse(
         });
       }
     }
-    reply.raw.end();
+    safeEnd(reply);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (signal.aborted || isAbortError(error)) {
+      emitAborted(message);
+      safeEnd(reply);
+      return;
+    }
     if (emitEvents) {
       context.bus.emit({
         type: "response.error",
@@ -339,8 +391,18 @@ async function relaySse(
         message
       });
     }
+    safeEnd(reply);
+  }
+}
+
+function safeEnd(reply: FastifyReply): void {
+  if (!reply.raw.destroyed && !reply.raw.writableEnded) {
     reply.raw.end();
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || error.message.toLowerCase().includes("abort"));
 }
 
 function inspectRequestBody(body: Buffer | undefined): { model?: string; stream: boolean } {

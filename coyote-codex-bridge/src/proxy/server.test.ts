@@ -16,9 +16,23 @@ import { buildServer } from "./server.js";
 const servers: Server[] = [];
 
 afterEach(async () => {
-  await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  await Promise.all(servers.map(closeServer));
   servers.length = 0;
 });
+
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+    server.closeIdleConnections();
+    server.closeAllConnections();
+  });
+}
 
 async function createMockUpstream(handler: RequestListener) {
   const server = createServer(handler);
@@ -337,6 +351,42 @@ describe("proxy server", () => {
       outputTokens: 4,
       totalTokens: 14
     });
+  });
+
+  it("stops emitting stream events after the client aborts", async () => {
+    const upstream = await createMockUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      let count = 0;
+      const timer = setInterval(() => {
+        count += 1;
+        res.write(`data: {"choices":[{"delta":{"content":"part${count}"}}]}\n\n`);
+        if (count >= 5) {
+          clearInterval(timer);
+          res.end("data: [DONE]\n\n");
+        }
+      }, 20);
+      res.on("close", () => clearInterval(timer));
+    });
+    const proxy = await createProxy(upstream);
+    const controller = new AbortController();
+
+    const response = await fetch(`${proxy.baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock", stream: true, messages: [] }),
+      signal: controller.signal
+    });
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("missing response reader");
+
+    await reader.read();
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 160));
+
+    const events = proxy.bus.getRecent();
+    expect(events.filter((event) => event.type === "response.chunk")).toHaveLength(1);
+    expect(events.map((event) => event.type)).toContain("response.aborted");
+    expect(events.map((event) => event.type)).not.toContain("response.done");
   });
 
   it("exposes recent shock plans", async () => {

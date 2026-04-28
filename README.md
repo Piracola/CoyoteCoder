@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./CoyoteCoder.jpg" alt="CoyoteCoder" width="128" />
+<img src="./CoyoteCoder.png" alt="CoyoteCoder" width="128" />
 
 # CoyoteCoder
 
@@ -8,18 +8,18 @@
 [![Latest Release](https://img.shields.io/github/v/release/Piracola/CoyoteCoder?label=release)](https://github.com/Piracola/CoyoteCoder/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 
-CoyoteCoder 是一个本地运行的 LLM API 兼容层，用于监测上游 LLM 返回的内容并向DG-LAB发送指令。
+CoyoteCoder 是一个在本机运行的 LLM 代理工具。它位于你的 AI 客户端和上游模型服务之间，负责转发请求、观察模型返回内容，并按你的设置把反馈计划发送给 DG-LAB。
+
+你可以把它理解成一个带控制台的本地中转站：下游客户端仍然使用兼容 OpenAI 的 API 地址，上游模型、API Key、DG-LAB 配对和反馈参数都在 CoyoteCoder 控制台里配置。
+
+- 首次启动默认是预览模式，只记录计划，不会直接向设备输出。
+- 需要真实反馈时，请在控制台完成配对、点击“启动反馈”，并关闭预览模式。
+- 默认不保存原始请求内容，控制台和事件记录只展示统计信息，减少提示词、响应正文和 API Key 的额外暴露。
 
 </div>
 
 
-原理：客户端请求由 CoyoteCoder 转发至用户配置的上游模型服务，监测并根据返回内容向郊狼发送指令。
-
-首次启动时默认为预览模式，此时不会向郊狼发送指令，需点击“启动反馈”和关闭预览模式。
-
-代理层默认不保存原始请求内容，控制台和事件记录只展示统计信息，避免额外泄露提示词、响应正文或 API Key。
 
 ## 使用指南
 
@@ -35,8 +35,6 @@ CoyoteCoder 是一个本地运行的 LLM API 兼容层，用于监测上游 LLM 
 http://127.0.0.1:8787/v1
 ```
 
-
-
 删除整个解压文件夹即可卸载。
 
 
@@ -49,6 +47,7 @@ zip 解压后主要包含：
 CoyoteCoder.exe
 coyote-backend.exe
 config.example.yaml
+CoyoteCoder.png
 src-ui/dist/
 README.md
 ```
@@ -115,75 +114,9 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 
 
 
-## 开发者
+## 开发说明
 
-需要安装依赖：
-
-- Node.js 和 npm
-- 如需构建桌面端，需要 Rust 工具链和 Tauri v2 所需环境
-- 如需由脚本托管 DG-LAB Socket V2 后端，需要本地存在 `DG-LAB-OPENSOURCE/socket/v2/backend`
-
-安装并启动：
-
-```powershell
-cd .\coyote-codex-bridge
-npm install
-cd ..
-.\scripts\start-all.ps1
-```
-
-`scripts/start-all.ps1` 会自动创建缺失的本地配置文件，不再需要手动复制 `config.example.yaml`。
-
-常用启动参数：
-
-```powershell
-.\scripts\start-all.ps1 -NoBrowser
-.\scripts\start-all.ps1 -CoyotePort 8788 -DglabPort 9999
-.\scripts\start-all.ps1 -Build
-```
-
-## 开发者：桌面构建
-
-本地构建桌面应用：
-
-```powershell
-cd .\coyote-codex-bridge
-npm run tauri:build
-```
-
-推荐使用 GitHub Actions：
-
-1. 推送 `v*` tag，或手动运行 `Build Windows Portable` workflow。
-2. workflow 会执行类型检查、测试、API/UI 构建、后端 sidecar exe 构建和 Tauri 桌面构建。
-3. 最终上传 `CoyoteCoder-windows-portable.zip` artifact。
-
-## 常用接口
-
-- `GET /health`
-- `GET /status`
-- `GET /ui`
-- `GET /events/recent`
-- `GET /shock/recent`
-- `GET /dglab/status`
-- `POST /dglab/connect`
-- `POST /dglab/disconnect`
-- `GET /dglab/qr`
-- `POST /control/arm`
-- `POST /control/disarm`
-- `POST /control/panic`
-- `POST /control/dry-run`
-
-## 验证命令
-
-```powershell
-cd .\coyote-codex-bridge
-npm run typecheck
-npm test
-npm run build
-npm run smoke
-```
-
-`npm run smoke` 需要本地服务已启动。
+开发、构建、接口和验证命令请看 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 
 
