@@ -11,6 +11,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   portable-windows:
     name: Portable Windows zip
@@ -113,3 +116,33 @@ jobs:
           name: CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable
           path: coyote-codex-bridge/CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable.zip
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $tagName = "v$version"
+          $zipPath = "CoyoteCoder-$version-windows-portable.zip"
+          $title = "CoyoteCoder $version"
+          $notes = "Windows portable build for CoyoteCoder $version."
+
+          gh release view $tagName --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tagName $zipPath --repo $env:GITHUB_REPOSITORY --clobber
+            exit $LASTEXITCODE
+          }
+
+          $createArgs = @(
+            "release", "create", $tagName, $zipPath,
+            "--repo", $env:GITHUB_REPOSITORY,
+            "--target", $env:GITHUB_SHA,
+            "--title", $title,
+            "--notes", $notes
+          )
+          if ($version.Contains("-")) {
+            $createArgs += "--prerelease"
+          }
+
+          gh @createArgs
