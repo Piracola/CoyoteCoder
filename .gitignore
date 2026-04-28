@@ -9,6 +9,12 @@ coyote-codex-bridge/src-tauri/target/
 coverage/
 *.tsbuildinfo
 
+# Portable build artifacts
+coyote-codex-bridge/coyote-backend.exe
+coyote-codex-bridge/CoyoteCoder-*-windows-portable.zip
+coyote-codex-bridge/CoyoteCoder-*-windows-portable/
+coyote-codex-bridge/portable/
+
 # Local config and logs
 .env
 *.local.yaml

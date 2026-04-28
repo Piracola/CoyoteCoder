@@ -56,11 +56,77 @@ function Require-Command {
   }
 }
 
+function Find-VsBuildToolsPath {
+  $vswhereCandidates = @(
+    (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"),
+    (Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe")
+  )
+
+  foreach ($candidate in $vswhereCandidates) {
+    if (Test-Path -LiteralPath $candidate) {
+      $installationPath = & $candidate -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+      if ($LASTEXITCODE -eq 0 -and $installationPath) {
+        return [string]$installationPath
+      }
+    }
+  }
+
+  $fallbacks = @(
+    "Y:\Tools\VSBuildTools",
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools",
+    "C:\Program Files\Microsoft Visual Studio\2022\Community",
+    "C:\Program Files\Microsoft Visual Studio\2022\Professional",
+    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+  )
+
+  foreach ($fallback in $fallbacks) {
+    if (Test-Path -LiteralPath (Join-Path $fallback "VC\Auxiliary\Build\vcvarsall.bat")) {
+      return $fallback
+    }
+  }
+
+  return $null
+}
+
+function Import-VsBuildToolsEnvironment {
+  if (Get-Command "link.exe" -ErrorAction SilentlyContinue) {
+    return
+  }
+
+  $vsPath = Find-VsBuildToolsPath
+  if (-not $vsPath) {
+    return
+  }
+
+  $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+  if (-not (Test-Path -LiteralPath $vcvars)) {
+    return
+  }
+
+  Write-Step "Load Visual Studio C++ build environment"
+  $envOutput = & cmd.exe /s /c "set VCToolsVersion=& set VCToolsInstallDir=& call `"$vcvars`" x64 >nul && set"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to load Visual Studio Build Tools environment from $vcvars."
+  }
+
+  foreach ($line in $envOutput) {
+    $separator = $line.IndexOf("=")
+    if ($separator -le 0) {
+      continue
+    }
+
+    $name = $line.Substring(0, $separator)
+    $value = $line.Substring($separator + 1)
+    Set-Item -LiteralPath "env:$name" -Value $value
+  }
+}
+
 Push-Location $AppRoot
 try {
   Require-Command "node" "Install Node.js 20+."
   Require-Command "npm" "Install Node.js 20+."
   Require-Command "cargo" "Install Rust stable toolchain."
+  Import-VsBuildToolsEnvironment
   Require-Command "link.exe" "Install Visual Studio Build Tools with the C++ desktop workload."
 
   $packageJson = Get-Content "package.json" -Raw | ConvertFrom-Json
