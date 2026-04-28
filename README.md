@@ -42,10 +42,8 @@ CoyoteCoder 是一个运行在本地的 LLM 代理中转工具。它位于你的
 
 **🚨 紧急停止 (Panic) 接口**
 如遇异常，可立即调用此接口阻断输出：
-PowerShell
-
 ```
-Invoke-RestMethod -Method Post [http://127.0.0.1:8787/control/panic](http://127.0.0.1:8787/control/panic)
+Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 ```
 
 ## ⚙️ 进阶配置
@@ -53,12 +51,8 @@ Invoke-RestMethod -Method Post [http://127.0.0.1:8787/control/panic](http://127.
 程序运行后会在同级目录生成 `config.yaml`。你可以通过控制台或直接修改文件来调整进阶参数，例如更改服务端口或 Socket 地址。
 
 若未运行桌面端 GUI，或需在局域网内管理，可通过浏览器直接访问 Web 控制台：
+http://127.0.0.1:8787/ui
 
-Plaintext
-
-```
-[http://127.0.0.1:8787/ui](http://127.0.0.1:8787/ui)
-```
 
 ## 🛠️ 开发者指南
 
