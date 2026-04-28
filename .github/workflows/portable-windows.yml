@@ -102,6 +102,7 @@ jobs:
           Copy-Item ".\coyote-backend.exe" (Join-Path $portableDir "coyote-backend.exe") -Force
           Copy-Item ".\config.example.yaml" (Join-Path $portableDir "config.example.yaml") -Force
           Copy-Item "..\README.md" (Join-Path $portableDir "README.md") -Force
+          Copy-Item "..\CoyoteCoder.jpg" (Join-Path $portableDir "CoyoteCoder.jpg") -Force
           Copy-Item ".\src-ui\dist" (Join-Path $portableDir "src-ui\dist") -Recurse -Force
 
           Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath ".\$zipName" -Force

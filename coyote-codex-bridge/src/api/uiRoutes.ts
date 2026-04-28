@@ -24,6 +24,7 @@ interface UiRouteContext {
 export function registerUiRoutes(app: FastifyInstance, context: UiRouteContext): void {
   const legacyUiRoot = join(process.cwd(), "src", "ui");
   const builtUiRoot = join(process.cwd(), "src-ui", "dist");
+  const sourceUiPublicRoot = join(process.cwd(), "src-ui", "public");
 
   app.get("/", async (_request, reply) => {
     reply.type("text/html; charset=utf-8");
@@ -40,6 +41,17 @@ export function registerUiRoutes(app: FastifyInstance, context: UiRouteContext):
     return readUiIndex(builtUiRoot, legacyUiRoot);
   });
 
+  const serveBuiltPublicAsset = async (assetName: string, reply: FastifyReply) => {
+    if (assetName !== "icon.png") {
+      reply.code(404);
+      return { ok: false, error: "asset_not_found" };
+    }
+    const builtFile = join(builtUiRoot, assetName);
+    const file = (await fileExists(builtFile)) ? builtFile : join(sourceUiPublicRoot, assetName);
+    reply.type(contentTypeFor(file));
+    return readFile(file);
+  };
+
   const serveBuiltAsset = async (assetPath: string, reply: FastifyReply) => {
     if (!assetPath || assetPath.includes("..")) {
       reply.code(400);
@@ -50,6 +62,8 @@ export function registerUiRoutes(app: FastifyInstance, context: UiRouteContext):
     return readFile(file);
   };
 
+  app.get("/icon.png", async (_request, reply) => serveBuiltPublicAsset("icon.png", reply));
+  app.get("/ui/icon.png", async (_request, reply) => serveBuiltPublicAsset("icon.png", reply));
   app.get<{ Params: { "*": string } }>("/ui/assets/*", async (request, reply) => serveBuiltAsset(request.params["*"], reply));
   app.get<{ Params: { "*": string } }>("/assets/*", async (request, reply) => serveBuiltAsset(request.params["*"], reply));
 

@@ -39,6 +39,7 @@ import {
   type UiState,
   type UpstreamProtocol
 } from "./api";
+import appIconUrl from "./assets/icon.png";
 import "./styles.css";
 
 const providerPresets: Record<string, Partial<ProviderDraft>> = {
@@ -152,7 +153,7 @@ function App() {
       <header className="shell-header">
         <div className="brand">
           <span className="brand-mark">
-            <Zap size={22} />
+            <img src={appIconUrl} alt="" />
           </span>
           <div>
             <h1>CoyoteCoder</h1>

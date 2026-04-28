@@ -1,10 +1,19 @@
 <div align="center">
 
+<img src="./CoyoteCoder.jpg" alt="CoyoteCoder" width="128" />
+
 # CoyoteCoder
+
+[![Build Windows Portable](https://github.com/Piracola/CoyoteCoder/actions/workflows/portable-windows.yml/badge.svg)](https://github.com/Piracola/CoyoteCoder/actions/workflows/portable-windows.yml)
+[![Latest Release](https://img.shields.io/github/v/release/Piracola/CoyoteCoder?label=release)](https://github.com/Piracola/CoyoteCoder/releases)
+![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
+![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 
 CoyoteCoder 是一个本地运行的 LLM API 兼容层，用于监测上游 LLM 返回的内容并向DG-LAB发送指令。
 
 </div>
+
 
 原理：客户端请求由 CoyoteCoder 转发至用户配置的上游模型服务，监测并根据返回内容向郊狼发送指令。
 
@@ -175,3 +184,9 @@ npm run smoke
 ```
 
 `npm run smoke` 需要本地服务已启动。
+
+
+
+## 致谢
+
+感谢 [Linux Do](https://linux.do/) 热心佬友提供项目灵感❤️。
