@@ -6,7 +6,6 @@ export interface SafetyStatus {
   armed: boolean;
   panic: boolean;
   channelLimits: Record<Channel, number>;
-  minEventIntervalMs: number;
   maxContinuousOutputMs: number;
   maxEventsPerMinute: number;
   recentEventsInWindow: number;
@@ -14,7 +13,6 @@ export interface SafetyStatus {
 
 export interface SafetySettingsPatch {
   channelLimits?: Partial<Record<Channel, number>>;
-  minEventIntervalMs?: number;
   maxContinuousOutputMs?: number;
   maxEventsPerMinute?: number;
 }
@@ -24,7 +22,6 @@ export class SafetyGate {
   private armed: boolean;
   private panicState = false;
   private readonly eventTimes: number[] = [];
-  private readonly lastByChannel = new Map<Channel, number>();
 
   constructor(private readonly config: AppConfig["safety"]) {
     this.dryRun = config.dry_run;
@@ -60,9 +57,6 @@ export class SafetyGate {
     if (patch.channelLimits?.B !== undefined) {
       this.config.channel_limits.B = clampInteger(patch.channelLimits.B, 0, 100);
     }
-    if (patch.minEventIntervalMs !== undefined) {
-      this.config.min_event_interval_ms = clampInteger(patch.minEventIntervalMs, 0, 10_000);
-    }
     if (patch.maxContinuousOutputMs !== undefined) {
       this.config.max_continuous_output_ms = clampInteger(patch.maxContinuousOutputMs, 1, 30_000);
     }
@@ -78,7 +72,6 @@ export class SafetyGate {
       armed: this.armed,
       panic: this.panicState,
       channelLimits: this.config.channel_limits,
-      minEventIntervalMs: this.config.min_event_interval_ms,
       maxContinuousOutputMs: this.config.max_continuous_output_ms,
       maxEventsPerMinute: this.config.max_events_per_minute,
       recentEventsInWindow: this.eventTimes.length
@@ -107,17 +100,11 @@ export class SafetyGate {
       return undefined;
     }
 
-    const last = this.lastByChannel.get(plan.channel) ?? 0;
-    if (now - last < this.config.min_event_interval_ms) {
-      return undefined;
-    }
-
     const channelLimit = this.config.channel_limits[plan.channel] / 100;
     const safeIntensity = Math.min(plan.intensity, channelLimit);
     const safeDuration = Math.min(plan.durationMs, this.config.max_continuous_output_ms);
 
     this.eventTimes.push(now);
-    this.lastByChannel.set(plan.channel, now);
 
     return {
       ...plan,

@@ -27,7 +27,6 @@ safety:
   channel_limits:
     A: 15
     B: 10
-  min_event_interval_ms: 150
   max_continuous_output_ms: 3000
   max_events_per_minute: 120
   panic_zero_on_exit: true
@@ -35,22 +34,30 @@ safety:
 policy:
   request_started:
     channel: "A"
-    intensity: 0.08
+    coefficient: 1.0
     duration_ms: 120
   response_started:
     channel: "B"
-    intensity: 0.08
+    coefficient: 1.0
     duration_ms: 120
   response_chunk:
     channel: "B"
-    min_intensity: 0.04
-    max_intensity: 0.35
+    coefficient: 1.0
+    micro_intensity: 0.1
     duration_ms: 120
-    rate_window_ms: 1000
+  response_tool_call:
+    channel: "A"
+    coefficient: 1.0
+    duration_ms: 160
+  response_error_status:
+    channel: "A"
+    coefficient: 1.0
+    duration_ms: 220
   response_done:
     channel: "A"
-    intensity: 0.06
+    coefficient: 1.0
     duration_ms: 180
+    token_target: 1200
 
 dglab:
   enabled: true

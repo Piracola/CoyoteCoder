@@ -1,51 +1,68 @@
+<div align="center">
+
 # CoyoteCoder
 
-CoyoteCoder 是一个本地运行的事件驱动兼容层，用来连接 OpenAI 兼容的 Agent 客户端和 DG-LAB Coyote 反馈流程。
+CoyoteCoder 是一个本地运行的 LLM API 兼容层，用于监测上游 LLM 返回的内容并向DG-LAB发送指令。
 
-它当前的实现以安全和可验证为优先：
+</div>
 
-- 提供 OpenAI 兼容的 `/v1/*` 代理接口，可供 Codex、Claude Code、OpenCode 等客户端接入。
-- 为常见 chat 和 responses 接口生成统一的请求、响应生命周期事件。
-- 通过安全层把事件转换为反馈计划，默认只记录 dry-run 结果，不发送真实输出。
-- 支持 DG-LAB Socket V2 配对、状态查看、紧急停止和运行时参数调整。
-- 提供本地 Web 控制台，并可通过 Tauri v2 运行桌面应用。
+原理：客户端请求由 CoyoteCoder 转发至用户配置的上游模型服务，监测并根据返回内容向郊狼发送指令。
 
-DG-LAB 官方开源仓库会放在本地 `DG-LAB-OPENSOURCE/` 目录中作为参考和运行 Socket V2 后端使用，该目录已被本仓库忽略。
+首次启动时默认为预览模式，此时不会向郊狼发送指令，需点击“启动反馈”和关闭预览模式。
 
-## 环境要求
+代理层默认不保存原始请求内容，控制台和事件记录只展示统计信息，避免额外泄露提示词、响应正文或 API Key。
 
-- Windows PowerShell
-- Node.js 和 npm
-- DG-LAB Socket V2 后端源码位于 `DG-LAB-OPENSOURCE/socket/v2/backend`
-- 如需构建桌面端，还需要安装 Rust 工具链和 Tauri v2 所需环境
+## 使用指南
 
-## 安装依赖
+在 [Release](https://github.com/Piracola/CoyoteCoder/releases)中下载最新发行版
 
-首次使用先安装桥接服务依赖：
+1. 下载并解压 zip 。
+2. 运行 `CoyoteCoder.exe`。
+3. 首次启动会自动创建 `config.yaml`，此文件用于记录软件配置。
+4. 打开控制台后，在“API 供应商”中填写上游模型服务和 API Key。
+5. 将下游客户端的 Base URL 设置为：
 
-```powershell
-cd .\coyote-codex-bridge
-npm install
+```text
+http://127.0.0.1:8787/v1
 ```
 
-DG-LAB Socket V2 后端也需要安装依赖，请进入对应目录按其项目要求完成安装。
 
-## 配置
 
-复制示例配置为本地配置文件：
+删除整个解压文件夹即可卸载。
 
-```powershell
-Copy-Item .\coyote-codex-bridge\config.example.yaml .\coyote-codex-bridge\config.local.yaml
+
+
+## 便携版目录
+
+zip 解压后主要包含：
+
+```text
+CoyoteCoder.exe
+coyote-backend.exe
+config.example.yaml
+src-ui/dist/
+README.md
 ```
 
-常用配置项：
+运行后会在同一目录下生成：
 
-- `server.host` 和 `server.port`：CoyoteCoder API 与 Web UI 的监听地址，默认 `127.0.0.1:8787`。
+```text
+config.yaml
+logs/
+```
+
+
+
+## 配置文件
+
+`config.yaml` 会在首次启动时自动生成。常用配置项：
+
+- `server.host` 和 `server.port`：本地 API 与控制台后端地址，默认 `127.0.0.1:8787`。
 - `upstream.active_provider`：当前使用的上游模型服务。
-- `upstream.providers`：OpenAI 兼容、本地兼容或其他协议供应商配置。
+- `upstream.providers`：OpenAI 兼容、Anthropic、Gemini 或本地兼容供应商配置。
 - `privacy.store_raw_content`：是否保存原始请求内容，默认关闭。
 - `safety.dry_run`：是否只生成计划而不发送真实 DG-LAB 输出，默认开启。
-- `safety.armed`：真实输出的总开关，默认关闭。
+- `safety.armed`：真实输出总开关，默认关闭。
 - `dglab.socket_url`：DG-LAB Socket V2 后端地址，默认 `ws://127.0.0.1:9999`。
 - `dglab.qr_host`：配对二维码使用的主机地址，默认 `auto` 自动选择局域网 IPv4。
 
@@ -57,32 +74,56 @@ safety:
   armed: false
 ```
 
-## 快速启动
+真实输出测试前请先阅读：
 
-在仓库根目录运行一键启动脚本：
-
-```powershell
-.\scripts\start-all.ps1
+```text
+docs/safety.md
 ```
 
-也可以双击或运行批处理入口：
 
-```powershell
-.\start-dev.bat
-```
 
-脚本会尝试启动：
+## Web 控制台
 
-- DG-LAB Socket V2 后端，默认端口 `9999`
-- CoyoteCoder UI/API 服务，默认端口 `8787`
-
-启动完成后打开控制台：
+桌面端会自动启动本地后端。也可以在浏览器打开：
 
 ```text
 http://127.0.0.1:8787/ui
 ```
 
-日志会写入 `.test-logs/`，运行时 PID 和清理脚本会写入 `.runtime/`。保持启动窗口打开，关闭窗口会停止脚本托管的服务。
+
+
+## DG-LAB 配对
+
+1. 确认 DG-LAB Socket V2 服务可访问，默认地址为 `ws://127.0.0.1:9999`。
+2. 在控制台中生成配对码。
+3. 使用郊狼 APP 扫描二维码。
+
+紧急停止接口：
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
+```
+
+
+
+## 开发者
+
+需要安装依赖：
+
+- Node.js 和 npm
+- 如需构建桌面端，需要 Rust 工具链和 Tauri v2 所需环境
+- 如需由脚本托管 DG-LAB Socket V2 后端，需要本地存在 `DG-LAB-OPENSOURCE/socket/v2/backend`
+
+安装并启动：
+
+```powershell
+cd .\coyote-codex-bridge
+npm install
+cd ..
+.\scripts\start-all.ps1
+```
+
+`scripts/start-all.ps1` 会自动创建缺失的本地配置文件，不再需要手动复制 `config.example.yaml`。
 
 常用启动参数：
 
@@ -92,108 +133,20 @@ http://127.0.0.1:8787/ui
 .\scripts\start-all.ps1 -Build
 ```
 
-## 手动启动
+## 开发者：桌面构建
 
-只启动 CoyoteCoder 服务：
-
-```powershell
-cd .\coyote-codex-bridge
-npm run dev
-```
-
-构建后运行：
-
-```powershell
-cd .\coyote-codex-bridge
-npm run build
-npm start
-```
-
-默认服务地址：
-
-```text
-http://127.0.0.1:8787
-```
-
-## Web 控制台
-
-打开：
-
-```text
-http://127.0.0.1:8787/ui
-```
-
-控制台可用于：
-
-- 启动或停止反馈流程
-- 切换 dry-run
-- 查看 DG-LAB 连接状态
-- 生成 DG-LAB 配对二维码
-- 调整通道强度、持续时间、频率限制等运行时参数
-- 查看最近事件和反馈计划
-- 执行紧急停止
-
-## 客户端接入
-
-将 OpenAI 兼容客户端的 Base URL 指向：
-
-```text
-http://127.0.0.1:8787/v1
-```
-
-示例环境变量：
-
-```powershell
-$env:OPENAI_BASE_URL="http://127.0.0.1:8787/v1"
-$env:OPENAI_API_KEY="local-placeholder"
-```
-
-真实上游 API Key 推荐写入 `config.local.yaml` 或本地环境变量，不要提交到 Git。
-
-更多客户端配置可参考：
-
-```text
-coyote-codex-bridge/docs/client-setup.md
-```
-
-## DG-LAB 配对
-
-1. 启动 DG-LAB Socket V2 后端和 CoyoteCoder。
-2. 保持 `safety.dry_run: true`。
-3. 打开 `http://127.0.0.1:8787/ui`。
-4. 点击生成配对码，或访问 `GET /dglab/qr`。
-5. 使用 APP 扫描二维码。
-6. 通过 UI 或 `GET /dglab/status` 确认已绑定。
-7. 先发送 dry-run 请求，确认事件和计划正常出现，再考虑真实输出测试。
-
-真实输出测试前请先阅读：
-
-```text
-docs/safety.md
-```
-
-## 桌面应用
-
-桌面端基于 Tauri v2，源码位于：
-
-```text
-coyote-codex-bridge/src-tauri
-```
-
-开发模式：
-
-```powershell
-.\scripts\start-all.ps1 -NoBrowser
-cd .\coyote-codex-bridge
-npm run tauri:dev
-```
-
-构建桌面应用：
+本地构建桌面应用：
 
 ```powershell
 cd .\coyote-codex-bridge
 npm run tauri:build
 ```
+
+推荐使用 GitHub Actions：
+
+1. 推送 `v*` tag，或手动运行 `Build Windows Portable` workflow。
+2. workflow 会执行类型检查、测试、API/UI 构建、后端 sidecar exe 构建和 Tauri 桌面构建。
+3. 最终上传 `CoyoteCoder-windows-portable.zip` artifact。
 
 ## 常用接口
 
@@ -222,15 +175,3 @@ npm run smoke
 ```
 
 `npm run smoke` 需要本地服务已启动。
-
-## 安全提示
-
-CoyoteCoder 默认是 dry-run 模式。配对、代理请求、事件记录和反馈计划都验证稳定之前，不要关闭 dry-run，也不要开启真实输出。
-
-紧急停止接口：
-
-```powershell
-Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
-```
-
-紧急停止会关闭 armed 状态，并为两个通道生成归零计划。再次测试前，请确认 UI 状态和 `docs/safety.md` 中的检查项。

@@ -41,14 +41,14 @@
               <select id="providerSelect"></select>
             </label>
             <label>
-              预设
-              <select id="providerPreset">
-                <option value="custom">自定义</option>
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="gemini">Gemini</option>
-              </select>
-            </label>
+                预设
+                <select id="providerPreset">
+                  <option value="custom">自定义</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="gemini">Gemini</option>
+                </select>
+              </label>
             <label>
               名称
               <input id="providerName" type="text" autocomplete="off">
@@ -118,7 +118,10 @@
       <section class="panel settings-panel">
         <div class="panel-head">
           <h2>电击参数</h2>
-          <button class="primary" id="saveBtn" type="button">保存参数</button>
+          <div class="button-row">
+            <button class="ghost" id="resetDefaultsBtn" type="button">重置默认</button>
+            <button class="primary" id="saveBtn" type="button">保存参数</button>
+          </div>
         </div>
 
         <form id="settingsForm">
@@ -132,10 +135,6 @@
               <label>
                 B 通道上限
                 <input id="limitB" type="number" min="0" max="100" step="1">
-              </label>
-              <label>
-                最小间隔 ms
-                <input id="minInterval" type="number" min="0" max="10000" step="10">
               </label>
               <label>
                 单次最长 ms
@@ -157,8 +156,8 @@
                 </select>
               </label>
               <label>
-                强度 %
-                <input id="requestIntensity" type="number" min="0" max="100" step="1">
+                强度系数
+                <input id="requestCoefficient" type="number" min="0" max="1" step="0.1">
               </label>
               <label>
                 持续 ms
@@ -176,8 +175,8 @@
                 </select>
               </label>
               <label>
-                强度 %
-                <input id="startedIntensity" type="number" min="0" max="100" step="1">
+                强度系数
+                <input id="startedCoefficient" type="number" min="0" max="1" step="0.1">
               </label>
               <label>
                 持续 ms
@@ -195,20 +194,54 @@
                 </select>
               </label>
               <label>
-                最小强度 %
-                <input id="chunkMin" type="number" min="0" max="100" step="1">
+                强度系数
+                <input id="chunkCoefficient" type="number" min="0" max="1" step="0.1">
               </label>
               <label>
-                最大强度 %
-                <input id="chunkMax" type="number" min="0" max="100" step="1">
+                微电流强度
+                <input id="chunkMicroIntensity" type="number" min="0" max="1" step="0.1">
               </label>
               <label>
                 持续 ms
                 <input id="chunkDuration" type="number" min="1" max="30000" step="10">
               </label>
+            </fieldset>
+
+            <fieldset>
+              <legend>工具调用</legend>
               <label>
-                速率窗口 ms
-                <input id="chunkWindow" type="number" min="1" max="10000" step="50">
+                通道
+                <select id="toolChannel">
+                  <option value="A">A</option>
+                  <option value="B">B</option>
+                </select>
+              </label>
+              <label>
+                强度系数
+                <input id="toolCoefficient" type="number" min="0" max="1" step="0.1">
+              </label>
+              <label>
+                持续 ms
+                <input id="toolDuration" type="number" min="1" max="30000" step="10">
+              </label>
+            </fieldset>
+
+            <fieldset>
+              <legend>错误返回</legend>
+              <label>
+                通道
+                <select id="errorStatusChannel">
+                  <option value="A">A</option>
+                  <option value="B">B</option>
+                </select>
+              </label>
+              <label>
+                强度系数
+                <input id="errorStatusCoefficient" type="number" min="0" max="1" step="0.1">
+              </label>
+              <label>
+                持续 ms
+                <input id="errorStatusDuration" type="number" min="1" max="30000" step="10">
               </label>
             </fieldset>
 
@@ -222,8 +255,8 @@
                 </select>
               </label>
               <label>
-                强度 %
-                <input id="doneIntensity" type="number" min="0" max="100" step="1">
+                强度系数
+                <input id="doneCoefficient" type="number" min="0" max="1" step="0.1">
               </label>
               <label>
                 持续 ms

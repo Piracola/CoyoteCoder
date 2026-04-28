@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const channelSchema = z.enum(["A", "B"]);
 const upstreamProtocolSchema = z.enum(["openai", "anthropic", "gemini"]);
+const coefficientSchema = z.coerce.number().min(0).max(1).transform((value) => Math.round(value * 10) / 10);
 const objectWithDefaults = <Shape extends z.ZodRawShape>(shape: Shape) =>
   z.preprocess((value) => value ?? {}, z.object(shape));
 
@@ -32,7 +33,7 @@ const upstreamSchema = z.preprocess(
 
 export const configSchema = z.object({
   server: objectWithDefaults({
-    host: z.string().default("127.0.0.1"),
+    host: z.string().default("127.0.0.1").refine(isLocalBindHost, "server.host must be a local loopback host"),
     port: z.coerce.number().int().min(1).max(65535).default(8787)
   }),
   upstream: upstreamSchema,
@@ -47,7 +48,6 @@ export const configSchema = z.object({
       A: z.coerce.number().int().min(0).max(100).default(15),
       B: z.coerce.number().int().min(0).max(100).default(10)
     }),
-    min_event_interval_ms: z.coerce.number().int().min(0).default(150),
     max_continuous_output_ms: z.coerce.number().int().min(1).default(3000),
     max_events_per_minute: z.coerce.number().int().min(1).default(120),
     panic_zero_on_exit: z.boolean().default(true)
@@ -55,25 +55,35 @@ export const configSchema = z.object({
   policy: objectWithDefaults({
     request_started: objectWithDefaults({
       channel: channelSchema.default("A"),
-      intensity: z.number().min(0).max(1).default(0.08),
+      coefficient: coefficientSchema.default(1),
       duration_ms: z.coerce.number().int().positive().default(120)
     }),
     response_started: objectWithDefaults({
       channel: channelSchema.default("B"),
-      intensity: z.number().min(0).max(1).default(0.08),
+      coefficient: coefficientSchema.default(1),
       duration_ms: z.coerce.number().int().positive().default(120)
     }),
     response_chunk: objectWithDefaults({
       channel: channelSchema.default("B"),
-      min_intensity: z.number().min(0).max(1).default(0.04),
-      max_intensity: z.number().min(0).max(1).default(0.35),
-      duration_ms: z.coerce.number().int().positive().default(120),
-      rate_window_ms: z.coerce.number().int().positive().default(1000)
+      coefficient: coefficientSchema.default(1),
+      micro_intensity: coefficientSchema.default(0.1),
+      duration_ms: z.coerce.number().int().positive().default(120)
+    }),
+    response_tool_call: objectWithDefaults({
+      channel: channelSchema.default("A"),
+      coefficient: coefficientSchema.default(1),
+      duration_ms: z.coerce.number().int().positive().default(160)
+    }),
+    response_error_status: objectWithDefaults({
+      channel: channelSchema.default("A"),
+      coefficient: coefficientSchema.default(1),
+      duration_ms: z.coerce.number().int().positive().default(220)
     }),
     response_done: objectWithDefaults({
       channel: channelSchema.default("A"),
-      intensity: z.number().min(0).max(1).default(0.06),
-      duration_ms: z.coerce.number().int().positive().default(180)
+      coefficient: coefficientSchema.default(1),
+      duration_ms: z.coerce.number().int().positive().default(180),
+      token_target: z.coerce.number().int().positive().default(1200)
     })
   }),
   dglab: objectWithDefaults({
@@ -128,4 +138,9 @@ function readString(source: Record<string, unknown>, key: string): string | unde
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isLocalBindHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "localhost" || normalized === "::1" || /^127(?:\.\d{1,3}){3}$/.test(normalized);
 }

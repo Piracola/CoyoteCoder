@@ -69,4 +69,71 @@ describe("ShockEngine", () => {
       }
     ]);
   });
+
+  it("plans tool-call, error-status, and token-scaled done feedback", async () => {
+    const config = configSchema.parse({ safety: { channel_limits: { A: 100, B: 100 } } });
+    const bus = new EventBus(20);
+    const sink = new CapturingSink();
+    const store = new ShockPlanStore(20);
+    const engine = new ShockEngine(bus, new ShockPolicy(config.policy), new SafetyGate(config.safety), sink, store);
+
+    await engine.emitPlansFor({
+      type: "response.tool_call",
+      requestId: "req_tools",
+      timestamp: 1_000,
+      toolCallCount: 1,
+      toolNames: ["edit_file"]
+    });
+    await engine.emitPlansFor({
+      type: "response.error_status",
+      requestId: "req_error",
+      timestamp: 1_100,
+      statusCode: 429,
+      message: "rate limited"
+    });
+    await engine.emitPlansFor({
+      type: "response.done",
+      requestId: "req_done",
+      timestamp: 1_200,
+      statusCode: 200,
+      outputTokens: 600
+    });
+
+    expect(sink.plans).toMatchObject([
+      { channel: "A", intensity: 1 / 3, durationMs: 160, reason: "response.tool_call" },
+      { channel: "A", intensity: 0.65, durationMs: 220, reason: "response.error_status" },
+      { channel: "A", intensity: 0.5, durationMs: 180, reason: "response.done" }
+    ]);
+    expect(store.getRecent()).toMatchObject([
+      { eventType: "response.tool_call", outcome: "sent" },
+      { eventType: "response.error_status", outcome: "sent" },
+      { eventType: "response.done", outcome: "sent" }
+    ]);
+  });
+
+  it("keeps weak current for low-signal streaming chunks", async () => {
+    const config = configSchema.parse({
+      safety: { channel_limits: { A: 100, B: 100 } },
+      policy: { response_chunk: { micro_intensity: 0.2, coefficient: 0.5 } }
+    });
+    const bus = new EventBus(20);
+    const sink = new CapturingSink();
+    const store = new ShockPlanStore(20);
+    const engine = new ShockEngine(bus, new ShockPolicy(config.policy), new SafetyGate(config.safety), sink, store);
+
+    await engine.emitPlansFor({
+      type: "response.chunk",
+      requestId: "req_stream",
+      timestamp: 1_000,
+      bytes: 1,
+      chars: 1,
+      deltaMs: 10_000,
+      cumulativeChars: 1,
+      streamRateCharsPerSec: 0.1
+    });
+
+    expect(sink.plans).toMatchObject([
+      { channel: "B", intensity: 0.1, durationMs: 120, reason: "response.chunk" }
+    ]);
+  });
 });

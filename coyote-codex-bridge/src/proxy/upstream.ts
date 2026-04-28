@@ -1,5 +1,6 @@
 import type { AppConfig } from "../config/schema.js";
 import { SseParser } from "./sse.js";
+import { EnvHttpProxyAgent, fetch as undiciFetch, type Dispatcher } from "undici";
 
 const hopByHopHeaders = new Set([
   "connection",
@@ -92,6 +93,16 @@ interface OpenAiModelSummary {
   owned_by: string;
 }
 
+interface FetchInitWithDispatcher {
+  method: string;
+  headers: Headers;
+  body?: Uint8Array;
+  signal: AbortSignal;
+  dispatcher?: Dispatcher;
+}
+
+let envProxyAgent: EnvHttpProxyAgent | undefined;
+
 export class UpstreamClient {
   constructor(private readonly config: UpstreamConfig) {}
 
@@ -138,11 +149,9 @@ export class UpstreamClient {
     const url = new URL(input.path + input.query, normalizedBaseUrl(this.config.base_url));
     const headers = copyClientHeaders(input.headers);
 
-    if (!headers.has("authorization")) {
-      const apiKey = resolveApiKey(this.config);
-      if (apiKey) {
-        headers.set("authorization", `Bearer ${apiKey}`);
-      }
+    const apiKey = resolveApiKey(this.config);
+    if (apiKey) {
+      headers.set("authorization", `Bearer ${apiKey}`);
     }
 
     return fetchWithTimeout(url, input, headers, this.config.timeout_ms);
@@ -417,15 +426,36 @@ async function fetchWithTimeout(
 
   const body = input.body ? new Uint8Array(input.body) : undefined;
   try {
-    return await fetch(url, {
+    const init: FetchInitWithDispatcher = {
       method: input.method,
       headers,
       body,
-      signal: controller.signal
-    });
+      signal: controller.signal,
+      dispatcher: envProxyDispatcher(url)
+    };
+    return (await undiciFetch(url, init as unknown as Parameters<typeof undiciFetch>[1])) as unknown as Response;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function envProxyDispatcher(url: URL): Dispatcher | undefined {
+  if (isLocalAddress(url.hostname) || !hasProxyEnv(url.protocol)) {
+    return undefined;
+  }
+  envProxyAgent ??= new EnvHttpProxyAgent();
+  return envProxyAgent;
+}
+
+function hasProxyEnv(protocol: string): boolean {
+  const httpProxy = process.env.HTTP_PROXY ?? process.env.http_proxy;
+  const httpsProxy = process.env.HTTPS_PROXY ?? process.env.https_proxy ?? httpProxy;
+  return protocol === "https:" ? Boolean(httpsProxy) : Boolean(httpProxy);
+}
+
+function isLocalAddress(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized.endsWith(".localhost");
 }
 
 function parseRequestBody(body: Buffer | undefined): ChatRequest {

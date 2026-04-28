@@ -6,7 +6,6 @@ import type { ShockPlan } from "./types.js";
 function safety(overrides: Partial<ReturnType<typeof configSchema.parse>["safety"]> = {}) {
   const config = configSchema.parse({
     safety: {
-      min_event_interval_ms: 150,
       max_events_per_minute: 2,
       ...overrides
     }
@@ -45,15 +44,8 @@ describe("SafetyGate", () => {
     expect(gate.evaluate(plan, 1_000)).toBeUndefined();
   });
 
-  it("enforces minimum interval per channel", () => {
-    const gate = safety({ dry_run: true });
-    expect(gate.evaluate(plan, 1_000)).toBeDefined();
-    expect(gate.evaluate(plan, 1_100)).toBeUndefined();
-    expect(gate.evaluate(plan, 1_200)).toBeDefined();
-  });
-
   it("enforces max events per minute", () => {
-    const gate = safety({ dry_run: true, min_event_interval_ms: 0, max_events_per_minute: 2 });
+    const gate = safety({ dry_run: true, max_events_per_minute: 2 });
     expect(gate.evaluate({ ...plan, channel: "A" }, 1_000)).toBeDefined();
     expect(gate.evaluate({ ...plan, channel: "B" }, 1_001)).toBeDefined();
     expect(gate.evaluate({ ...plan, channel: "A" }, 1_002)).toBeUndefined();

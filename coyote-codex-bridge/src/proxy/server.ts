@@ -28,7 +28,15 @@ export function buildServer(context: ProxyContext): FastifyInstance {
   const upstream = new UpstreamClient(context.config.upstream);
 
   app.addHook("onRequest", (request, reply, done) => {
-    reply.header("access-control-allow-origin", "*");
+    const origin = request.headers.origin;
+    if (origin && !isAllowedBrowserOrigin(origin)) {
+      reply.code(403).send({ ok: false, error: "origin_not_allowed" });
+      return;
+    }
+    if (origin) {
+      reply.header("access-control-allow-origin", origin);
+      reply.header("vary", "origin");
+    }
     reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     reply.header("access-control-allow-headers", "content-type,authorization,x-api-key,x-goog-api-key,anthropic-version");
     if (request.method === "OPTIONS") {
@@ -101,7 +109,7 @@ async function handleProxyRequest(
   const query = request.url.includes("?") ? `?${request.url.split("?").slice(1).join("?")}` : "";
   const body = serializeRequestBody(request.body);
   const bodyInfo = inspectRequestBody(body);
-  const knownEventEndpoint = path === "/v1/chat/completions" || path === "/v1/responses";
+  const knownEventEndpoint = path === "/v1/chat/completions" || path === "/v1/responses" || path === "/v1/completions";
 
   if (knownEventEndpoint) {
     context.bus.emit({
@@ -156,20 +164,18 @@ async function handleProxyRequest(
     const arrayBuffer = await upstreamResponse.arrayBuffer();
     const responseBody = Buffer.from(arrayBuffer);
     if (knownEventEndpoint) {
-      context.bus.emit({
-        type: "response.done",
+      emitFinalResponseEvents(context, {
         requestId,
-        timestamp: Date.now(),
         model: bodyInfo.model,
+        startedAt,
         statusCode: upstreamResponse.status,
-        bytes: responseBody.byteLength,
-        chars: responseBody.toString("utf8").length,
-        durationMs: Date.now() - startedAt
+        bodyText: responseBody.toString("utf8"),
+        bytes: responseBody.byteLength
       });
     }
     reply.send(responseBody);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeDiagnosticMessage(error instanceof Error ? error.message : String(error));
     if (knownEventEndpoint) {
       context.bus.emit({
         type: abortController.signal.aborted ? "response.aborted" : "response.error",
@@ -203,6 +209,11 @@ async function relaySse(
 
   let lastChunkAt = Date.now();
   let cumulativeChars = 0;
+  let outputChars = 0;
+  let outputTokens: number | undefined;
+  let totalTokens: number | undefined;
+  let finishReason: string | undefined;
+  let toolCallEmitted = false;
 
   reply.raw.flushHeaders?.();
 
@@ -220,6 +231,22 @@ async function relaySse(
       for (const event of parser.feed(value)) {
         if (!event.data || event.data === "[DONE]") {
           continue;
+        }
+        const metadata = inspectResponseMetadata(event.data);
+        outputChars += metadata.outputChars;
+        outputTokens = metadata.outputTokens ?? outputTokens;
+        totalTokens = metadata.totalTokens ?? totalTokens;
+        finishReason = metadata.finishReason ?? finishReason;
+        if (!toolCallEmitted && metadata.toolCallCount > 0) {
+          toolCallEmitted = true;
+          context.bus.emit({
+            type: "response.tool_call",
+            requestId,
+            timestamp: now,
+            model,
+            toolCallCount: metadata.toolCallCount,
+            toolNames: metadata.toolNames.length > 0 ? metadata.toolNames : undefined
+          });
         }
         const chars = event.data.length;
         cumulativeChars += chars;
@@ -240,6 +267,22 @@ async function relaySse(
 
     for (const event of parser.end()) {
       if (emitEvents && event.data && event.data !== "[DONE]") {
+        const metadata = inspectResponseMetadata(event.data);
+        outputChars += metadata.outputChars;
+        outputTokens = metadata.outputTokens ?? outputTokens;
+        totalTokens = metadata.totalTokens ?? totalTokens;
+        finishReason = metadata.finishReason ?? finishReason;
+        if (!toolCallEmitted && metadata.toolCallCount > 0) {
+          toolCallEmitted = true;
+          context.bus.emit({
+            type: "response.tool_call",
+            requestId,
+            timestamp: Date.now(),
+            model,
+            toolCallCount: metadata.toolCallCount,
+            toolNames: metadata.toolNames.length > 0 ? metadata.toolNames : undefined
+          });
+        }
         const chars = event.data.length;
         cumulativeChars += chars;
         context.bus.emit({
@@ -257,15 +300,32 @@ async function relaySse(
     }
 
     if (emitEvents) {
-      context.bus.emit({
-        type: "response.done",
-        requestId,
-        timestamp: Date.now(),
-        model,
-        statusCode: upstreamResponse.status,
-        chars: cumulativeChars,
-        durationMs: Date.now() - startedAt
-      });
+      const inferredOutputTokens = outputTokens ?? estimateTokens(outputChars);
+      if (upstreamResponse.status >= 400) {
+        context.bus.emit({
+          type: "response.error_status",
+          requestId,
+          timestamp: Date.now(),
+          model,
+          statusCode: upstreamResponse.status,
+          chars: cumulativeChars,
+          durationMs: Date.now() - startedAt
+        });
+      } else {
+        context.bus.emit({
+          type: "response.done",
+          requestId,
+          timestamp: Date.now(),
+          model,
+          statusCode: upstreamResponse.status,
+          chars: cumulativeChars,
+          durationMs: Date.now() - startedAt,
+          outputTokens: inferredOutputTokens,
+          totalTokens,
+          estimatedTokens: outputTokens === undefined,
+          finishReason
+        });
+      }
     }
     reply.raw.end();
   } catch (error) {
@@ -311,11 +371,263 @@ function serializeRequestBody(body: unknown): Buffer | undefined {
   return Buffer.from(JSON.stringify(body), "utf8");
 }
 
+interface FinalResponseInput {
+  requestId: string;
+  model: string | undefined;
+  startedAt: number;
+  statusCode: number;
+  bodyText: string;
+  bytes: number;
+}
+
+interface ResponseMetadata {
+  outputChars: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  finishReason?: string;
+  toolCallCount: number;
+  toolNames: string[];
+  errorMessage?: string;
+}
+
+function emitFinalResponseEvents(context: ProxyContext, input: FinalResponseInput): void {
+  const metadata = inspectResponseMetadata(input.bodyText);
+  if (metadata.toolCallCount > 0) {
+    context.bus.emit({
+      type: "response.tool_call",
+      requestId: input.requestId,
+      timestamp: Date.now(),
+      model: input.model,
+      toolCallCount: metadata.toolCallCount,
+      toolNames: metadata.toolNames.length > 0 ? metadata.toolNames : undefined
+    });
+  }
+
+  if (input.statusCode >= 400) {
+    context.bus.emit({
+      type: "response.error_status",
+      requestId: input.requestId,
+      timestamp: Date.now(),
+      model: input.model,
+      statusCode: input.statusCode,
+      bytes: input.bytes,
+      chars: input.bodyText.length,
+      message: metadata.errorMessage,
+      durationMs: Date.now() - input.startedAt
+    });
+    return;
+  }
+
+  const outputTokens = metadata.outputTokens ?? estimateTokens(metadata.outputChars);
+  context.bus.emit({
+    type: "response.done",
+    requestId: input.requestId,
+    timestamp: Date.now(),
+    model: input.model,
+    statusCode: input.statusCode,
+    bytes: input.bytes,
+    chars: input.bodyText.length,
+    durationMs: Date.now() - input.startedAt,
+    outputTokens,
+    totalTokens: metadata.totalTokens,
+    estimatedTokens: metadata.outputTokens === undefined,
+    finishReason: metadata.finishReason
+  });
+}
+
+function inspectResponseMetadata(text: string): ResponseMetadata {
+  const payload = safeJson(text);
+  if (!isRecord(payload)) {
+    return { outputChars: 0, toolCallCount: 0, toolNames: [] };
+  }
+
+  const usage = isRecord(payload.usage) ? payload.usage : undefined;
+  const toolNames: string[] = [];
+  return {
+    outputChars: extractOutputTextChars(payload),
+    outputTokens: usage ? readFirstNumber(usage, ["completion_tokens", "output_tokens", "completionTokens", "outputTokens"]) : undefined,
+    totalTokens: usage ? readFirstNumber(usage, ["total_tokens", "totalTokens"]) : undefined,
+    finishReason: readFinishReason(payload),
+    toolCallCount: countToolCalls(payload, toolNames),
+    toolNames: [...new Set(toolNames)],
+    errorMessage: readErrorMessage(payload)
+  };
+}
+
+function extractOutputTextChars(payload: Record<string, unknown>): number {
+  let chars = 0;
+
+  if (typeof payload.output_text === "string") {
+    chars += payload.output_text.length;
+  }
+  if (typeof payload.delta === "string" && typeof payload.type === "string" && payload.type.includes("output_text")) {
+    chars += payload.delta.length;
+  }
+  if (Array.isArray(payload.choices)) {
+    for (const choice of payload.choices.filter(isRecord)) {
+      chars += readContentChars(choice.text);
+      if (isRecord(choice.message)) {
+        chars += readContentChars(choice.message.content);
+      }
+      if (isRecord(choice.delta)) {
+        chars += readContentChars(choice.delta.content);
+      }
+    }
+  }
+  if (Array.isArray(payload.output)) {
+    for (const item of payload.output.filter(isRecord)) {
+      chars += readContentChars(item.content);
+    }
+  }
+  if (Array.isArray(payload.content)) {
+    chars += readContentChars(payload.content);
+  }
+
+  return chars;
+}
+
+function readContentChars(value: unknown): number {
+  if (typeof value === "string") {
+    return value.length;
+  }
+  if (!Array.isArray(value)) {
+    return 0;
+  }
+  let chars = 0;
+  for (const item of value.filter(isRecord)) {
+    if (typeof item.text === "string") {
+      chars += item.text.length;
+    }
+    if (typeof item.output_text === "string") {
+      chars += item.output_text.length;
+    }
+  }
+  return chars;
+}
+
+function readFinishReason(payload: Record<string, unknown>): string | undefined {
+  if (typeof payload.finish_reason === "string") {
+    return payload.finish_reason;
+  }
+  if (typeof payload.stop_reason === "string") {
+    return payload.stop_reason;
+  }
+  if (Array.isArray(payload.choices)) {
+    for (const choice of payload.choices.filter(isRecord)) {
+      if (typeof choice.finish_reason === "string") {
+        return choice.finish_reason;
+      }
+    }
+  }
+  return undefined;
+}
+
+function countToolCalls(value: unknown, toolNames: string[]): number {
+  if (Array.isArray(value)) {
+    return value.reduce((count, item) => count + countToolCalls(item, toolNames), 0);
+  }
+  if (!isRecord(value)) {
+    return 0;
+  }
+
+  let count = 0;
+  if (Array.isArray(value.tool_calls)) {
+    count += value.tool_calls.length;
+    for (const item of value.tool_calls.filter(isRecord)) {
+      collectToolName(item, toolNames);
+    }
+  }
+  if (isRecord(value.function_call)) {
+    count += 1;
+    collectToolName(value.function_call, toolNames);
+  }
+  if (value.type === "function_call" || value.type === "tool_use") {
+    count += 1;
+    collectToolName(value, toolNames);
+  }
+
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === "tool_calls" || key === "function_call") {
+      continue;
+    }
+    count += countToolCalls(nested, toolNames);
+  }
+  return count;
+}
+
+function collectToolName(value: Record<string, unknown>, toolNames: string[]): void {
+  if (typeof value.name === "string" && value.name.trim()) {
+    toolNames.push(value.name.trim());
+  }
+  if (isRecord(value.function) && typeof value.function.name === "string" && value.function.name.trim()) {
+    toolNames.push(value.function.name.trim());
+  }
+}
+
+function readErrorMessage(payload: Record<string, unknown>): string | undefined {
+  let message: string | undefined;
+  if (typeof payload.error === "string") {
+    message = payload.error;
+  } else if (isRecord(payload.error) && typeof payload.error.message === "string") {
+    message = payload.error.message;
+  } else if (typeof payload.message === "string") {
+    message = payload.message;
+  }
+  return message ? sanitizeDiagnosticMessage(message) : undefined;
+}
+
+function readFirstNumber(source: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function estimateTokens(chars: number): number | undefined {
+  if (chars <= 0) {
+    return undefined;
+  }
+  return Math.max(1, Math.ceil(chars / 4));
+}
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAllowedBrowserOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname.toLowerCase();
+    return hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname) || hostname.endsWith(".localhost");
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeDiagnosticMessage(message: string): string {
+  return message
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/(api[_-]?key|x-api-key|x-goog-api-key)([\"'\s:=]+)[^\"'\s,}]+/gi, "$1$2[redacted]")
+    .slice(0, 500);
+}
+
 function copyResponseHeaders(upstreamResponse: Response, reply: FastifyReply): void {
   upstreamResponse.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
     if (
       lower === "connection" ||
+      lower === "content-encoding" ||
       lower === "content-length" ||
       lower === "keep-alive" ||
       lower === "proxy-authenticate" ||

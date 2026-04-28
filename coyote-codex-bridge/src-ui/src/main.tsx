@@ -13,6 +13,7 @@ import {
   Power,
   QrCode,
   RefreshCw,
+  RotateCcw,
   Save,
   Server,
   ShieldCheck,
@@ -202,6 +203,7 @@ function App() {
                 )}
                 {settings && (
                   <SettingsPanel
+                    busy={busy}
                     draft={settings}
                     dirty={settingsDirty}
                     setDirty={setSettingsDirty}
@@ -556,12 +558,14 @@ function ProviderPanel({
 }
 
 function SettingsPanel({
+  busy,
   draft,
   dirty,
   setDirty,
   setDraft,
   runAction
 }: {
+  busy: string | null;
   draft: SettingsDraft;
   dirty: boolean;
   setDirty: (value: boolean) => void;
@@ -573,7 +577,10 @@ function SettingsPanel({
     setDraft((current) => (current ? producer(current) : current));
   };
 
-  const updatePulse = (key: "requestStarted" | "responseStarted" | "responseDone", next: PulsePolicy) =>
+  const updatePulse = (
+    key: "requestStarted" | "responseStarted" | "responseToolCall" | "responseErrorStatus" | "responseDone",
+    next: PulsePolicy
+  ) =>
     update((current) => ({
       ...current,
       policy: {
@@ -602,7 +609,6 @@ function SettingsPanel({
           <div className="inline-fields">
             <NumberField label="A 通道上限" value={draft.safety.channelLimits.A} min={0} max={100} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, channelLimits: { ...current.safety.channelLimits, A: value } } }))} />
             <NumberField label="B 通道上限" value={draft.safety.channelLimits.B} min={0} max={100} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, channelLimits: { ...current.safety.channelLimits, B: value } } }))} />
-            <NumberField label="最小间隔 ms" value={draft.safety.minEventIntervalMs} min={0} max={10000} step={10} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, minEventIntervalMs: value } }))} />
             <NumberField label="单次最长 ms" value={draft.safety.maxContinuousOutputMs} min={1} max={30000} step={100} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxContinuousOutputMs: value } }))} />
             <NumberField label="每分钟上限" value={draft.safety.maxEventsPerMinute} min={1} max={600} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxEventsPerMinute: value } }))} />
           </div>
@@ -611,10 +617,31 @@ function SettingsPanel({
         <PulseEditor title="请求开始" value={draft.policy.requestStarted} onChange={(next) => updatePulse("requestStarted", next)} />
         <PulseEditor title="响应开始" value={draft.policy.responseStarted} onChange={(next) => updatePulse("responseStarted", next)} />
         <ChunkEditor value={draft.policy.responseChunk} onChange={updateChunk} />
+        <PulseEditor title="工具调用" value={draft.policy.responseToolCall} onChange={(next) => updatePulse("responseToolCall", next)} />
+        <PulseEditor title="错误返回" value={draft.policy.responseErrorStatus} onChange={(next) => updatePulse("responseErrorStatus", next)} />
         <PulseEditor title="响应完成" value={draft.policy.responseDone} onChange={(next) => updatePulse("responseDone", next)} />
       </div>
       <div className="panel-footer">
         <ActionButton
+          busy={busy === "settings-reset"}
+          variant="secondary"
+          icon={<RotateCcw size={17} />}
+          onClick={() =>
+            runAction("settings-reset", "已恢复默认参数", async () => {
+              const next = await api<UiState>("/ui/settings", {
+                method: "POST",
+                body: JSON.stringify({ action: "reset-defaults" })
+              });
+              setDirty(false);
+              setDraft(settingsFromState(next));
+              return next;
+            })
+          }
+        >
+          重置默认
+        </ActionButton>
+        <ActionButton
+          busy={busy === "settings"}
           disabled={!dirty}
           icon={<Save size={17} />}
           onClick={() =>
@@ -688,7 +715,7 @@ function PulseEditor({ title, value, onChange }: { title: string; value: PulsePo
       </h3>
       <div className="compact-fields">
         <ChannelSelect value={value.channel} onChange={(channel) => onChange({ ...value, channel })} />
-        <IntensityField value={Math.round(value.intensity * 100)} onChange={(next) => onChange({ ...value, intensity: next / 100 })} />
+        <CoefficientField value={value.coefficient} onChange={(coefficient) => onChange({ ...value, coefficient })} />
         <NumberField label="持续 ms" value={value.durationMs} min={1} max={30000} step={10} onChange={(durationMs) => onChange({ ...value, durationMs })} />
       </div>
     </section>
@@ -703,10 +730,9 @@ function ChunkEditor({ value, onChange }: { value: ChunkPolicy; onChange: (value
       </h3>
       <div className="compact-fields">
         <ChannelSelect value={value.channel} onChange={(channel) => onChange({ ...value, channel })} />
-        <IntensityField label="最小强度 %" value={Math.round(value.minIntensity * 100)} onChange={(next) => onChange({ ...value, minIntensity: next / 100 })} />
-        <IntensityField label="最大强度 %" value={Math.round(value.maxIntensity * 100)} onChange={(next) => onChange({ ...value, maxIntensity: next / 100 })} />
+        <CoefficientField value={value.coefficient} onChange={(coefficient) => onChange({ ...value, coefficient })} />
+        <MicroIntensityField value={value.microIntensity} onChange={(microIntensity) => onChange({ ...value, microIntensity })} />
         <NumberField label="持续 ms" value={value.durationMs} min={1} max={30000} step={10} onChange={(durationMs) => onChange({ ...value, durationMs })} />
-        <NumberField label="速率窗口 ms" value={value.rateWindowMs} min={1} max={10000} step={50} onChange={(rateWindowMs) => onChange({ ...value, rateWindowMs })} />
       </div>
     </section>
   );
@@ -720,13 +746,18 @@ function NumberField({ label, value, min, max, step = 1, onChange }: { label: st
   );
 }
 
-function IntensityField({ label = "强度 %", value, onChange }: { label?: string; value: number; onChange: (value: number) => void }) {
+function CoefficientField({ value, onChange }: { value: number; onChange: (value: number) => void }) {
   return (
-    <Field label={label}>
-      <div className="range-field">
-        <input type="range" min={0} max={100} step={1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
-        <input type="number" min={0} max={100} step={1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
-      </div>
+    <Field label="强度系数">
+      <input type="number" min={0} max={1} step={0.1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    </Field>
+  );
+}
+
+function MicroIntensityField({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  return (
+    <Field label="微电流强度">
+      <input type="number" min={0} max={1} step={0.1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     </Field>
   );
 }

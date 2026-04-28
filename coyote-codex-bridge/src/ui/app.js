@@ -13,22 +13,26 @@ const fields = {
   providerTimeout: $("providerTimeout"),
   limitA: $("limitA"),
   limitB: $("limitB"),
-  minInterval: $("minInterval"),
   maxContinuous: $("maxContinuous"),
   maxPerMinute: $("maxPerMinute"),
   requestChannel: $("requestChannel"),
-  requestIntensity: $("requestIntensity"),
+  requestCoefficient: $("requestCoefficient"),
   requestDuration: $("requestDuration"),
   startedChannel: $("startedChannel"),
-  startedIntensity: $("startedIntensity"),
+  startedCoefficient: $("startedCoefficient"),
   startedDuration: $("startedDuration"),
   chunkChannel: $("chunkChannel"),
-  chunkMin: $("chunkMin"),
-  chunkMax: $("chunkMax"),
+  chunkCoefficient: $("chunkCoefficient"),
+  chunkMicroIntensity: $("chunkMicroIntensity"),
   chunkDuration: $("chunkDuration"),
-  chunkWindow: $("chunkWindow"),
+  toolChannel: $("toolChannel"),
+  toolCoefficient: $("toolCoefficient"),
+  toolDuration: $("toolDuration"),
+  errorStatusChannel: $("errorStatusChannel"),
+  errorStatusCoefficient: $("errorStatusCoefficient"),
+  errorStatusDuration: $("errorStatusDuration"),
   doneChannel: $("doneChannel"),
-  doneIntensity: $("doneIntensity"),
+  doneCoefficient: $("doneCoefficient"),
   doneDuration: $("doneDuration")
 };
 
@@ -101,19 +105,19 @@ function renderSettings(state) {
 
   fields.limitA.value = safety.channelLimits.A;
   fields.limitB.value = safety.channelLimits.B;
-  fields.minInterval.value = safety.minEventIntervalMs;
   fields.maxContinuous.value = safety.maxContinuousOutputMs;
   fields.maxPerMinute.value = safety.maxEventsPerMinute;
 
   setPulse("request", policy.requestStarted);
   setPulse("started", policy.responseStarted);
+  setPulse("tool", policy.responseToolCall);
+  setPulse("errorStatus", policy.responseErrorStatus);
   setPulse("done", policy.responseDone);
 
   fields.chunkChannel.value = policy.responseChunk.channel;
-  fields.chunkMin.value = percent(policy.responseChunk.minIntensity);
-  fields.chunkMax.value = percent(policy.responseChunk.maxIntensity);
+  fields.chunkCoefficient.value = policy.responseChunk.coefficient;
+  fields.chunkMicroIntensity.value = policy.responseChunk.microIntensity;
   fields.chunkDuration.value = policy.responseChunk.durationMs;
-  fields.chunkWindow.value = policy.responseChunk.rateWindowMs;
 }
 
 function renderProvider(state) {
@@ -163,7 +167,7 @@ function uniqueProviderId(seed, providers) {
 
 function setPulse(prefix, pulse) {
   fields[`${prefix}Channel`].value = pulse.channel;
-  fields[`${prefix}Intensity`].value = percent(pulse.intensity);
+  fields[`${prefix}Coefficient`].value = pulse.coefficient;
   fields[`${prefix}Duration`].value = pulse.durationMs;
 }
 
@@ -279,7 +283,6 @@ function collectSettings() {
         A: numberValue(fields.limitA),
         B: numberValue(fields.limitB)
       },
-      minEventIntervalMs: numberValue(fields.minInterval),
       maxContinuousOutputMs: numberValue(fields.maxContinuous),
       maxEventsPerMinute: numberValue(fields.maxPerMinute)
     },
@@ -288,11 +291,12 @@ function collectSettings() {
       responseStarted: getPulse("started"),
       responseChunk: {
         channel: fields.chunkChannel.value,
-        minIntensity: ratio(fields.chunkMin),
-        maxIntensity: ratio(fields.chunkMax),
-        durationMs: numberValue(fields.chunkDuration),
-        rateWindowMs: numberValue(fields.chunkWindow)
+        coefficient: numberValue(fields.chunkCoefficient),
+        microIntensity: numberValue(fields.chunkMicroIntensity),
+        durationMs: numberValue(fields.chunkDuration)
       },
+      responseToolCall: getPulse("tool"),
+      responseErrorStatus: getPulse("errorStatus"),
       responseDone: getPulse("done")
     }
   };
@@ -315,21 +319,13 @@ function collectProvider() {
 function getPulse(prefix) {
   return {
     channel: fields[`${prefix}Channel`].value,
-    intensity: ratio(fields[`${prefix}Intensity`]),
+    coefficient: numberValue(fields[`${prefix}Coefficient`]),
     durationMs: numberValue(fields[`${prefix}Duration`])
   };
 }
 
 function numberValue(input) {
   return Number(input.value);
-}
-
-function ratio(input) {
-  return Number(input.value) / 100;
-}
-
-function percent(value) {
-  return Math.round(Number(value) * 100);
 }
 
 function showToast(message, isError = false) {
@@ -454,6 +450,14 @@ $("saveBtn").addEventListener("click", () =>
     api("/ui/settings", {
       method: "POST",
       body: JSON.stringify(collectSettings())
+    })
+  )
+);
+$("resetDefaultsBtn").addEventListener("click", () =>
+  runAction("已恢复默认参数", () =>
+    api("/ui/settings", {
+      method: "POST",
+      body: JSON.stringify({ action: "reset-defaults" })
     })
   )
 );

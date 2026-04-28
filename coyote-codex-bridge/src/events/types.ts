@@ -4,6 +4,8 @@ export type CoyoteEventType =
   | "response.started"
   | "response.chunk"
   | "response.done"
+  | "response.tool_call"
+  | "response.error_status"
   | "response.error"
   | "response.aborted"
   | "dglab.connected"
@@ -60,6 +62,25 @@ export interface ResponseDoneEvent extends BaseEvent {
   bytes?: number;
   chars?: number;
   durationMs?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  estimatedTokens?: boolean;
+  finishReason?: string;
+}
+
+export interface ResponseToolCallEvent extends BaseEvent {
+  type: "response.tool_call";
+  toolCallCount: number;
+  toolNames?: string[];
+}
+
+export interface ResponseErrorStatusEvent extends BaseEvent {
+  type: "response.error_status";
+  statusCode: number;
+  bytes?: number;
+  chars?: number;
+  message?: string;
+  durationMs?: number;
 }
 
 export interface ResponseErrorEvent extends BaseEvent {
@@ -77,5 +98,7 @@ export type CoyoteEvent =
   | RequestBodySeenEvent
   | ResponseChunkEvent
   | ResponseDoneEvent
+  | ResponseToolCallEvent
+  | ResponseErrorStatusEvent
   | ResponseErrorEvent
   | ResponseAbortedEvent;

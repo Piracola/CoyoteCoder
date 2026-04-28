@@ -582,28 +582,11 @@ p {
 }
 
 .compact-fields {
-  grid-template-columns: minmax(90px, 0.7fr) minmax(150px, 1.3fr) minmax(120px, 0.9fr);
+  grid-template-columns: minmax(90px, 0.7fr) repeat(2, minmax(130px, 1fr)) minmax(120px, 0.9fr);
 }
 
-.settings-layout .field-group:first-child,
-.settings-layout .field-group:nth-child(4) {
+.settings-layout .field-group:first-child {
   grid-column: 1 / -1;
-}
-
-.settings-layout .field-group:nth-child(4) .compact-fields {
-  grid-template-columns: minmax(90px, 0.7fr) repeat(2, minmax(150px, 1.3fr)) repeat(2, minmax(120px, 0.9fr));
-}
-
-.range-field {
-  display: grid;
-  grid-template-columns: minmax(90px, 1fr) 64px;
-  gap: 6px;
-  align-items: center;
-}
-
-.range-field input[type="range"] {
-  padding: 0;
-  accent-color: var(--teal);
 }
 
 .log-list {
@@ -716,9 +699,6 @@ p {
     grid-template-columns: 1fr;
   }
 
-  .settings-layout .field-group:nth-child(4) .compact-fields {
-    grid-template-columns: repeat(2, minmax(160px, 1fr));
-  }
 }
 
 @media (max-width: 820px) {
@@ -738,7 +718,6 @@ p {
   .settings-layout,
   .inline-fields,
   .compact-fields,
-  .settings-layout .field-group:nth-child(4) .compact-fields,
   .runtime-status,
   .command-row,
   .qr-content {

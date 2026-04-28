@@ -1,0 +1,114 @@
+name: Build Windows Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Build version, for example 0.1.0"
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  portable-windows:
+    name: Portable Windows zip
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: coyote-codex-bridge
+    env:
+      APP_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: coyote-codex-bridge/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Normalize build version
+        id: version
+        shell: pwsh
+        run: |
+          $version = $env:APP_VERSION.Trim()
+          if ($version.StartsWith("v")) {
+            $version = $version.Substring(1)
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+([\-+][0-9A-Za-z.-]+)?$') {
+            throw "Version must look like 0.1.0, 0.1.0-beta.1, or v0.1.0."
+          }
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Apply build version
+        shell: pwsh
+        run: |
+          $version = $env:APP_VERSION
+
+          $packageJson = Get-Content "package.json" -Raw | ConvertFrom-Json
+          $packageJson.version = $version
+          $packageJson | ConvertTo-Json -Depth 100 | Set-Content "package.json" -Encoding utf8
+
+          $packageLockJson = Get-Content "package-lock.json" -Raw | ConvertFrom-Json -AsHashtable
+          $packageLockJson["version"] = $version
+          if ($packageLockJson.ContainsKey("packages") -and $packageLockJson["packages"].ContainsKey("")) {
+            $packageLockJson["packages"][""]["version"] = $version
+          }
+          $packageLockJson | ConvertTo-Json -Depth 100 | Set-Content "package-lock.json" -Encoding utf8
+
+          $tauriConfig = Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json
+          $tauriConfig.version = $version
+          $tauriConfig | ConvertTo-Json -Depth 100 | Set-Content "src-tauri\tauri.conf.json" -Encoding utf8
+
+          $cargoToml = Get-Content "src-tauri\Cargo.toml" -Raw
+          $cargoToml = $cargoToml -replace '(?m)^version = ".+"', "version = `"$version`""
+          Set-Content "src-tauri\Cargo.toml" $cargoToml -Encoding utf8
+
+      - name: Install frontend and backend dependencies
+        run: npm ci
+
+      - name: Verify TypeScript and tests
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Build API and UI
+        run: npm run build
+
+      - name: Build backend sidecar exe
+        run: npx --yes @yao-pkg/pkg dist/src/index.js --targets node20-win-x64 --output coyote-backend.exe
+
+      - name: Build desktop exe
+        run: npm run tauri:build
+
+      - name: Assemble portable folder
+        shell: pwsh
+        run: |
+          $portableDir = Join-Path $PWD "portable\CoyoteCoder"
+          $zipName = "CoyoteCoder-$env:APP_VERSION-windows-portable.zip"
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $portableDir "src-ui") | Out-Null
+
+          Copy-Item ".\src-tauri\target\release\coyote-coder.exe" (Join-Path $portableDir "CoyoteCoder.exe") -Force
+          Copy-Item ".\coyote-backend.exe" (Join-Path $portableDir "coyote-backend.exe") -Force
+          Copy-Item ".\config.example.yaml" (Join-Path $portableDir "config.example.yaml") -Force
+          Copy-Item "..\README.md" (Join-Path $portableDir "README.md") -Force
+          Copy-Item ".\src-ui\dist" (Join-Path $portableDir "src-ui\dist") -Recurse -Force
+
+          Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath ".\$zipName" -Force
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable
+          path: coyote-codex-bridge/CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable.zip
+          if-no-files-found: error

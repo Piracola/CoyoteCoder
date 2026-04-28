@@ -3,16 +3,15 @@ export type UpstreamProtocol = "openai" | "anthropic" | "gemini";
 
 export interface PulsePolicy {
   channel: Channel;
-  intensity: number;
+  coefficient: number;
   durationMs: number;
 }
 
 export interface ChunkPolicy {
   channel: Channel;
-  minIntensity: number;
-  maxIntensity: number;
+  coefficient: number;
+  microIntensity: number;
   durationMs: number;
-  rateWindowMs: number;
 }
 
 export interface UiState {
@@ -32,7 +31,6 @@ export interface UiState {
     armed: boolean;
     panic?: boolean;
     channelLimits: Record<Channel, number>;
-    minEventIntervalMs: number;
     maxContinuousOutputMs: number;
     maxEventsPerMinute: number;
     recentEventsInWindow?: number;
@@ -41,6 +39,8 @@ export interface UiState {
     requestStarted: PulsePolicy;
     responseStarted: PulsePolicy;
     responseChunk: ChunkPolicy;
+    responseToolCall: PulsePolicy;
+    responseErrorStatus: PulsePolicy;
     responseDone: PulsePolicy;
   };
   dglab: {
@@ -116,7 +116,6 @@ export interface SettingsDraft {
   dryRun: boolean;
   safety: {
     channelLimits: Record<Channel, number>;
-    minEventIntervalMs: number;
     maxContinuousOutputMs: number;
     maxEventsPerMinute: number;
   };
@@ -180,7 +179,6 @@ export function settingsFromState(state: UiState): SettingsDraft {
         A: state.safety.channelLimits.A,
         B: state.safety.channelLimits.B
       },
-      minEventIntervalMs: state.safety.minEventIntervalMs,
       maxContinuousOutputMs: state.safety.maxContinuousOutputMs,
       maxEventsPerMinute: state.safety.maxEventsPerMinute
     },
@@ -188,6 +186,8 @@ export function settingsFromState(state: UiState): SettingsDraft {
       requestStarted: { ...state.policy.requestStarted },
       responseStarted: { ...state.policy.responseStarted },
       responseChunk: { ...state.policy.responseChunk },
+      responseToolCall: { ...state.policy.responseToolCall },
+      responseErrorStatus: { ...state.policy.responseErrorStatus },
       responseDone: { ...state.policy.responseDone }
     }
   };

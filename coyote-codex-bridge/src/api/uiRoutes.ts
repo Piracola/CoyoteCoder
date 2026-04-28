@@ -95,9 +95,33 @@ export function registerUiRoutes(app: FastifyInstance, context: UiRouteContext):
 
   app.post("/ui/settings", async (request) => {
     const body = parseJsonBody(request.body);
+    const action = readString(body, "action");
+    if (action === "reset-defaults") {
+      const defaults = configSchema.parse({});
+      const nextConfig = configSchema.parse({
+        ...context.config,
+        safety: {
+          ...context.config.safety,
+          channel_limits: { ...defaults.safety.channel_limits },
+          max_continuous_output_ms: defaults.safety.max_continuous_output_ms,
+          max_events_per_minute: defaults.safety.max_events_per_minute
+        },
+        policy: defaults.policy
+      });
+
+      Object.assign(context.config.safety, nextConfig.safety);
+      Object.assign(context.config.policy, nextConfig.policy);
+      writeConfigPatch({
+        safety: toPersistedSafety(nextConfig.safety),
+        policy: nextConfig.policy
+      });
+      return buildUiState(context);
+    }
+
     const dryRun = readBoolean(body, "dryRun");
     if (dryRun !== undefined) {
       context.safety.setDryRun(dryRun);
+      context.config.safety.dry_run = dryRun;
     }
 
     const safety = readObject(body, "safety");
@@ -110,6 +134,20 @@ export function registerUiRoutes(app: FastifyInstance, context: UiRouteContext):
     if (policy) {
       const policyPatch = readPolicyPatch(policy);
       context.policy.updateSettings(policyPatch);
+    }
+
+    if (dryRun !== undefined || safety || policy) {
+      const nextConfig = configSchema.parse({
+        ...context.config,
+        safety: context.config.safety,
+        policy: context.policy.getSettings()
+      });
+      Object.assign(context.config.safety, nextConfig.safety);
+      Object.assign(context.config.policy, nextConfig.policy);
+      writeConfigPatch({
+        safety: toPersistedSafety(nextConfig.safety),
+        policy: nextConfig.policy
+      });
     }
 
     return buildUiState(context);
@@ -364,29 +402,50 @@ function toPersistedUpstream(upstream: AppConfig["upstream"]) {
   };
 }
 
+function toPersistedSafety(safety: AppConfig["safety"]) {
+  return {
+    dry_run: safety.dry_run,
+    armed: safety.armed,
+    channel_limits: { ...safety.channel_limits },
+    max_continuous_output_ms: safety.max_continuous_output_ms,
+    max_events_per_minute: safety.max_events_per_minute,
+    panic_zero_on_exit: safety.panic_zero_on_exit
+  };
+}
+
 function toClientPolicy(policy: AppConfig["policy"]) {
   return {
     requestStarted: {
       channel: policy.request_started.channel,
-      intensity: policy.request_started.intensity,
+      coefficient: policy.request_started.coefficient,
       durationMs: policy.request_started.duration_ms
     },
     responseStarted: {
       channel: policy.response_started.channel,
-      intensity: policy.response_started.intensity,
+      coefficient: policy.response_started.coefficient,
       durationMs: policy.response_started.duration_ms
     },
     responseChunk: {
       channel: policy.response_chunk.channel,
-      minIntensity: policy.response_chunk.min_intensity,
-      maxIntensity: policy.response_chunk.max_intensity,
-      durationMs: policy.response_chunk.duration_ms,
-      rateWindowMs: policy.response_chunk.rate_window_ms
+      coefficient: policy.response_chunk.coefficient,
+      microIntensity: policy.response_chunk.micro_intensity,
+      durationMs: policy.response_chunk.duration_ms
     },
     responseDone: {
       channel: policy.response_done.channel,
-      intensity: policy.response_done.intensity,
-      durationMs: policy.response_done.duration_ms
+      coefficient: policy.response_done.coefficient,
+      durationMs: policy.response_done.duration_ms,
+      tokenTarget: policy.response_done.token_target
+    },
+    responseToolCall: {
+      channel: policy.response_tool_call.channel,
+      coefficient: policy.response_tool_call.coefficient,
+      durationMs: policy.response_tool_call.duration_ms
+    },
+    responseErrorStatus: {
+      channel: policy.response_error_status.channel,
+      coefficient: policy.response_error_status.coefficient,
+      durationMs: policy.response_error_status.duration_ms
     }
   };
 }
@@ -463,7 +522,6 @@ function readSafetyPatch(safety: Record<string, unknown>): SafetySettingsPatch {
           B: readNumber(channelLimits, "B")
         }
       : undefined,
-    minEventIntervalMs: readNumber(safety, "minEventIntervalMs"),
     maxContinuousOutputMs: readNumber(safety, "maxContinuousOutputMs"),
     maxEventsPerMinute: readNumber(safety, "maxEventsPerMinute")
   };
@@ -474,6 +532,8 @@ function readPolicyPatch(policy: Record<string, unknown>): PolicySettingsPatch {
     requestStarted: readPulsePatch(policy, "requestStarted"),
     responseStarted: readPulsePatch(policy, "responseStarted"),
     responseDone: readPulsePatch(policy, "responseDone"),
+    responseToolCall: readPulsePatch(policy, "responseToolCall"),
+    responseErrorStatus: readPulsePatch(policy, "responseErrorStatus"),
     responseChunk: readChunkPatch(policy)
   };
 }
@@ -485,7 +545,7 @@ function readPulsePatch(policy: Record<string, unknown>, key: string): PolicySet
   }
   return {
     channel: readChannel(value, "channel"),
-    intensity: readNumber(value, "intensity"),
+    coefficient: readNumber(value, "coefficient"),
     durationMs: readNumber(value, "durationMs")
   };
 }
@@ -497,10 +557,9 @@ function readChunkPatch(policy: Record<string, unknown>): PolicySettingsPatch["r
   }
   return {
     channel: readChannel(value, "channel"),
-    minIntensity: readNumber(value, "minIntensity"),
-    maxIntensity: readNumber(value, "maxIntensity"),
-    durationMs: readNumber(value, "durationMs"),
-    rateWindowMs: readNumber(value, "rateWindowMs")
+    coefficient: readNumber(value, "coefficient"),
+    microIntensity: readNumber(value, "microIntensity"),
+    durationMs: readNumber(value, "durationMs")
   };
 }
 
