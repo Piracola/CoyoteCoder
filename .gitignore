@@ -1,0 +1,20 @@
+/DG-LAB-OPENSOURCE/
+
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local config and logs
+.env
+*.local.yaml
+*.local.yml
+*.log
+.test-logs/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

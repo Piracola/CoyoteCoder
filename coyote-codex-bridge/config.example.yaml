@@ -1,0 +1,56 @@
+server:
+  host: "127.0.0.1"
+  port: 8787
+
+upstream:
+  name: "OpenAI"
+  protocol: "openai" # openai | anthropic | gemini
+  base_url: "https://api.openai.com"
+  api_key_env: "OPENAI_API_KEY"
+  # api_key: "" # optional local inline key; prefer env vars for shared configs
+  anthropic_version: "2023-06-01"
+  timeout_ms: 120000
+
+privacy:
+  store_raw_content: false
+  recent_event_limit: 200
+
+safety:
+  dry_run: true
+  armed: false
+  channel_limits:
+    A: 15
+    B: 10
+  min_event_interval_ms: 150
+  max_continuous_output_ms: 3000
+  max_events_per_minute: 120
+  panic_zero_on_exit: true
+
+policy:
+  request_started:
+    channel: "A"
+    intensity: 0.08
+    duration_ms: 120
+  response_started:
+    channel: "B"
+    intensity: 0.08
+    duration_ms: 120
+  response_chunk:
+    channel: "B"
+    min_intensity: 0.04
+    max_intensity: 0.35
+    duration_ms: 120
+    rate_window_ms: 1000
+  response_done:
+    channel: "A"
+    intensity: 0.06
+    duration_ms: 180
+
+dglab:
+  enabled: false
+  socket_url: "ws://127.0.0.1:9999"
+  qr_host: "127.0.0.1"
+  qr_port: 9999
+  default_channels:
+    request: "A"
+    response: "B"
