@@ -52,7 +52,7 @@ export function buildServer(context: ProxyContext): FastifyInstance {
 
   app.get("/health", async () => ({
     ok: true,
-    service: "coyote-codex-bridge",
+    service: "coyotecoder",
     time: new Date().toISOString()
   }));
 

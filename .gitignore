@@ -4,16 +4,11 @@
 node_modules/
 dist/
 src-ui/dist/
-src-tauri/target/
-coyote-codex-bridge/src-tauri/target/
+**/src-tauri/target/
 coverage/
 *.tsbuildinfo
 
-# Portable build artifacts
-coyote-codex-bridge/coyote-backend.exe
-coyote-codex-bridge/CoyoteCoder-*-windows-portable.zip
-coyote-codex-bridge/CoyoteCoder-*-windows-portable/
-coyote-codex-bridge/portable/
+# Portable build artifacts live under root dist/
 
 # Local config and logs
 .env

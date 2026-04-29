@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: coyote-codex-bridge
+        working-directory: app
     env:
       APP_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: coyote-codex-bridge/package-lock.json
+          cache-dependency-path: app/package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -88,7 +88,11 @@ jobs:
         run: npm run build
 
       - name: Build backend sidecar exe
-        run: npx --yes @yao-pkg/pkg dist/src/index.js --targets node20-win-x64 --output coyote-backend.exe
+        shell: pwsh
+        run: |
+          $outputRoot = Join-Path (Resolve-Path "..") "dist"
+          New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+          npx --yes @yao-pkg/pkg dist/src/index.js --targets node20-win-x64 --output (Join-Path $outputRoot "coyote-backend.exe")
 
       - name: Build desktop exe
         run: npm run tauri:build
@@ -96,25 +100,27 @@ jobs:
       - name: Assemble portable folder
         shell: pwsh
         run: |
-          $portableDir = Join-Path $PWD "portable\CoyoteCoder"
+          $outputRoot = Join-Path (Resolve-Path "..") "dist"
+          New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+          $portableDir = Join-Path $outputRoot "portable\CoyoteCoder"
           $zipName = "CoyoteCoder-$env:APP_VERSION-windows-portable.zip"
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
           New-Item -ItemType Directory -Force -Path (Join-Path $portableDir "src-ui") | Out-Null
 
           Copy-Item ".\src-tauri\target\release\coyote-coder.exe" (Join-Path $portableDir "CoyoteCoder.exe") -Force
-          Copy-Item ".\coyote-backend.exe" (Join-Path $portableDir "coyote-backend.exe") -Force
+          Copy-Item (Join-Path $outputRoot "coyote-backend.exe") (Join-Path $portableDir "coyote-backend.exe") -Force
           Copy-Item ".\config.example.yaml" (Join-Path $portableDir "config.example.yaml") -Force
           Copy-Item "..\README.md" (Join-Path $portableDir "README.md") -Force
           Copy-Item "..\CoyoteCoder.png" (Join-Path $portableDir "CoyoteCoder.png") -Force
           Copy-Item ".\src-ui\dist" (Join-Path $portableDir "src-ui\dist") -Recurse -Force
 
-          Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath ".\$zipName" -Force
+          Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath (Join-Path $outputRoot $zipName) -Force
 
       - name: Upload portable zip
         uses: actions/upload-artifact@v7
         with:
           name: CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable
-          path: coyote-codex-bridge/CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable.zip
+          path: dist/CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable.zip
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -124,7 +130,7 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $tagName = "v$version"
-          $zipPath = "CoyoteCoder-$version-windows-portable.zip"
+          $zipPath = "..\dist\CoyoteCoder-$version-windows-portable.zip"
           $title = "CoyoteCoder $version"
           $notes = "Windows portable build for CoyoteCoder $version."
 

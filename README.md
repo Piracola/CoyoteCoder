@@ -60,6 +60,13 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 
 关于本地开发、构建打包、接口规范及验证命令，请参阅 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
+更多项目文档：
+
+- [客户端接入](./app/docs/client-setup.md)
+- [安全流程](./docs/safety.md)
+- [架构说明](./docs/architecture.md)
+- [DG-LAB 协议备注](./docs/protocol-notes.md)
+
 ***
 
 ## ❤️ 致谢

@@ -234,8 +234,13 @@ export function registerUiRoutes(app: FastifyInstance, context: UiRouteContext):
       reply.code(404);
       return { ok: false, error: "dglab_disabled" };
     }
-    await context.dglab.connect();
-    await context.dglab.waitForClientId();
+    try {
+      await context.dglab.connect();
+      await context.dglab.waitForClientId();
+    } catch (error) {
+      reply.code(503);
+      return { ok: false, error: friendlyDglabError(error), dglab: context.dglab.getStatus() };
+    }
     const qrLink = context.dglab.getStatus().qrLink;
     if (!qrLink) {
       reply.code(503);
@@ -253,6 +258,17 @@ export function registerUiRoutes(app: FastifyInstance, context: UiRouteContext):
     reply.type("image/svg+xml; charset=utf-8");
     return svg;
   });
+}
+
+function friendlyDglabError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("ECONNREFUSED")) {
+    return "DG-LAB Socket 未启动或端口不可用";
+  }
+  if (message.includes("timed out waiting for DG-LAB clientId")) {
+    return "DG-LAB Socket 已连接，但没有返回配对码";
+  }
+  return message || "DG-LAB Socket 连接失败";
 }
 
 async function sendTestShock(
@@ -371,7 +387,7 @@ function contentTypeFor(path: string): string {
 function buildUiState(context: UiRouteContext) {
   return {
     ok: true,
-    service: "coyote-codex-bridge",
+    service: "coyotecoder",
     upstream: {
       activeProvider: context.config.upstream.active_provider,
       name: context.config.upstream.name,

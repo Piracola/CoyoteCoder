@@ -9,9 +9,11 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$AppRoot = Join-Path $RepoRoot "coyote-codex-bridge"
-$PortableRoot = Join-Path $AppRoot "portable"
+$AppRoot = Join-Path $RepoRoot "app"
+$OutputRoot = Join-Path $RepoRoot "dist"
+$PortableRoot = Join-Path $OutputRoot "portable"
 $PortableDir = Join-Path $PortableRoot "CoyoteCoder"
+$BackendExePath = Join-Path $OutputRoot "coyote-backend.exe"
 
 function Write-Step {
   param([string]$Message)
@@ -123,6 +125,8 @@ function Import-VsBuildToolsEnvironment {
 
 Push-Location $AppRoot
 try {
+  New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
+
   Require-Command "node" "Install Node.js 20+."
   Require-Command "npm" "Install Node.js 20+."
   Require-Command "cargo" "Install Rust stable toolchain."
@@ -132,7 +136,7 @@ try {
   $packageJson = Get-Content "package.json" -Raw | ConvertFrom-Json
   $buildVersion = if ($Version.Trim()) { Normalize-Version $Version } else { [string]$packageJson.version }
   $zipName = "CoyoteCoder-$buildVersion-windows-portable.zip"
-  $zipPath = Join-Path $AppRoot $zipName
+  $zipPath = Join-Path $OutputRoot $zipName
 
   if ($Version.Trim()) {
     Write-Step "Apply build version $buildVersion"
@@ -172,8 +176,12 @@ try {
   Write-Step "Build API and UI"
   Run "npm" @("run", "build")
 
+  if (-not $NoClean) {
+    Remove-Item -LiteralPath $BackendExePath -Force -ErrorAction SilentlyContinue
+  }
+
   Write-Step "Build backend sidecar"
-  Run "npx" @("--yes", "@yao-pkg/pkg", "dist/src/index.js", "--targets", "node20-win-x64", "--output", "coyote-backend.exe")
+  Run "npx" @("--yes", "@yao-pkg/pkg", "dist/src/index.js", "--targets", "node20-win-x64", "--output", $BackendExePath)
 
   Write-Step "Build desktop app"
   Run "npm" @("run", "tauri:build")
@@ -188,7 +196,7 @@ try {
   New-Item -ItemType Directory -Force -Path (Join-Path $PortableDir "src-ui") | Out-Null
 
   Copy-Item ".\src-tauri\target\release\coyote-coder.exe" (Join-Path $PortableDir "CoyoteCoder.exe") -Force
-  Copy-Item ".\coyote-backend.exe" (Join-Path $PortableDir "coyote-backend.exe") -Force
+  Copy-Item $BackendExePath (Join-Path $PortableDir "coyote-backend.exe") -Force
   Copy-Item ".\config.example.yaml" (Join-Path $PortableDir "config.example.yaml") -Force
   Copy-Item "..\README.md" (Join-Path $PortableDir "README.md") -Force
   Copy-Item "..\CoyoteCoder.png" (Join-Path $PortableDir "CoyoteCoder.png") -Force

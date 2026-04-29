@@ -197,12 +197,13 @@ function App() {
                 <RuntimePanel
                   state={state}
                   busy={busy}
+                  qrVersion={qrVersion}
+                  setQrVersion={setQrVersion}
                   runInBackground={runInBackground}
                   setRunInBackgroundState={setRunInBackgroundState}
                   showToast={showToast}
                   runAction={runAction}
                 />
-                <QrPanel state={state} busy={busy} qrVersion={qrVersion} setQrVersion={setQrVersion} runAction={runAction} />
               </section>
             </section>
 
@@ -267,6 +268,8 @@ function ApiNotice() {
 function RuntimePanel({
   state,
   busy,
+  qrVersion,
+  setQrVersion,
   runInBackground,
   setRunInBackgroundState,
   showToast,
@@ -274,11 +277,15 @@ function RuntimePanel({
 }: {
   state: UiState;
   busy: string | null;
+  qrVersion: number;
+  setQrVersion: (value: number | ((next: number) => number)) => void;
   runInBackground: boolean;
   setRunInBackgroundState: (value: boolean) => void;
   showToast: (message: string, tone?: "ok" | "error") => void;
   runAction: (key: string, success: string, action: () => Promise<UiState | void>) => Promise<void>;
 }) {
+  const qrSrc = state.dglab.qrLink ? apiUrl(`/ui/qr.svg?t=${qrVersion}`) : "";
+  const linkTone = state.dglab.bound ? "ok" : state.dglab.connected ? "warn" : "neutral";
   const updateRunInBackground = async (enabled: boolean) => {
     setRunInBackgroundState(enabled);
     try {
@@ -292,162 +299,179 @@ function RuntimePanel({
 
   return (
     <section className="panel runtime-panel">
-      <PanelTitle icon={<Power size={18} />} title="运行控制" />
-      <div className="command-row">
-        <ActionButton busy={busy === "start"} disabled={state.safety.armed} icon={<Play size={17} />} onClick={() => runAction("start", "反馈已启动", () => api<UiState>("/ui/start", { method: "POST" }))}>
-          启动反馈
-        </ActionButton>
-        <ActionButton
-          busy={busy === "stop"}
-          disabled={!state.safety.armed && !state.dglab.connected}
-          variant="secondary"
-          icon={<Square size={17} />}
-          onClick={() => runAction("stop", "反馈已停止", () => api<UiState>("/ui/stop", { method: "POST" }))}
-        >
-          停止反馈
-        </ActionButton>
-        <ActionButton
-          busy={busy === "panic"}
-          variant="danger"
-          icon={<AlertTriangle size={17} />}
-          onClick={() =>
-            runAction("panic", "已执行紧急停止", async () => {
-              await api("/control/panic", { method: "POST" });
-              return api<UiState>("/ui/state");
-            })
-          }
-        >
-          紧急停止
-        </ActionButton>
-        <ActionButton
-          busy={busy === "test-shock"}
-          disabled={!state.dglab.bound || (!state.safety.dryRun && !state.safety.armed)}
-          variant="secondary"
-          icon={<PlugZap size={17} />}
-          onClick={() =>
-            runAction("test-shock", state.safety.dryRun ? "预览测试已记录" : "测试电击已发送", async () =>
-              api<UiState>("/ui/test-shock", {
-                method: "POST",
-                body: JSON.stringify({ channel: "A", intensity: 0.05, durationMs: 220 })
-              })
-            )
-          }
-        >
-          测试电击
-        </ActionButton>
+      <PanelTitle icon={<Power size={18} />} title="运行控制与设备配对" />
+      <div className="runtime-overview">
+        <div className={`runtime-state-card ${state.safety.armed ? "armed" : "idle"}`}>
+          <span>反馈状态</span>
+          <strong>{state.safety.panic ? "Panic 锁定" : state.safety.armed ? "运行中" : "等待启动"}</strong>
+        </div>
+        <div className={`runtime-state-card ${linkTone}`}>
+          <span>设备状态</span>
+          <strong>{dglabLinkLabel(state)}</strong>
+        </div>
+        <div className="runtime-state-card">
+          <span>当前强度</span>
+          <strong>A {state.dglab.strengths?.A ?? 0} / B {state.dglab.strengths?.B ?? 0}</strong>
+        </div>
       </div>
-      <div className="runtime-status">
-        <StatusLine label="安全状态" value={state.safety.panic ? "Panic 锁定" : state.safety.armed ? "允许计划输出" : "等待启动"} />
-        <StatusLine label="配对状态" value={dglabLinkLabel(state)} />
-        <StatusLine label="每分钟窗口" value={`${state.safety.recentEventsInWindow ?? 0}/${state.safety.maxEventsPerMinute}`} />
-        <StatusLine label="DG-LAB Socket" value={state.dglab.socketUrl ?? "未启用"} />
-        <StatusLine label="Client ID" value={state.dglab.clientId ?? "等待分配"} />
-        <StatusLine label="Target ID" value={state.dglab.targetId ?? "等待 APP"} />
-        <StatusLine label="当前强度" value={`A ${state.dglab.strengths?.A ?? 0} / B ${state.dglab.strengths?.B ?? 0}`} />
-      </div>
-      <label className="runtime-toggle">
-        <input
-          type="checkbox"
-          checked={state.safety.dryRun}
-          disabled={busy === "preview-mode"}
-          onChange={(event) =>
-            runAction("preview-mode", event.target.checked ? "预览模式已开启" : "设备输出已开启", () =>
-              api<UiState>("/ui/settings", {
-                method: "POST",
-                body: JSON.stringify({ dryRun: event.target.checked })
-              })
-            )
-          }
-        />
-        <span>
-          <strong>预览模式</strong>
-          <small>只记录计划，不发送真实设备输出</small>
-        </span>
-      </label>
-      {isDesktopRuntime && (
-        <label className="runtime-toggle">
-          <input type="checkbox" checked={runInBackground} onChange={(event) => void updateRunInBackground(event.target.checked)} />
-          <span>
-            <strong>在后台运行</strong>
-            <small>关闭窗口后保留服务，双击托盘图标可重新打开</small>
-          </span>
-        </label>
-      )}
-    </section>
-  );
-}
 
-function QrPanel({
-  state,
-  busy,
-  qrVersion,
-  setQrVersion,
-  runAction
-}: {
-  state: UiState;
-  busy: string | null;
-  qrVersion: number;
-  setQrVersion: (value: number | ((next: number) => number)) => void;
-  runAction: (key: string, success: string, action: () => Promise<UiState | void>) => Promise<void>;
-}) {
-  const qrSrc = state.dglab.qrLink ? apiUrl(`/ui/qr.svg?t=${qrVersion}`) : "";
-  return (
-    <section className="panel qr-panel">
-      <PanelTitle icon={<QrCode size={18} />} title="设备配对" />
-      <div className="qr-content">
-        <div className="qr-box">
-          {qrSrc ? <img src={qrSrc} alt="DG-LAB 配对二维码" /> : <QrCode size={54} strokeWidth={1.5} />}
-        </div>
-        <div className="qr-actions">
-          <ActionButton
-            busy={busy === "connect"}
-            disabled={!state.dglab.enabled || state.dglab.connected}
-            variant="secondary"
-            icon={<PlugZap size={17} />}
-            onClick={() =>
-              runAction("connect", "DG-LAB 已连接", async () => {
-                await api("/dglab/connect", { method: "POST" });
-                return api<UiState>("/ui/state");
-              })
-            }
-          >
-            连接
-          </ActionButton>
-          <ActionButton
-            busy={busy === "disconnect"}
-            disabled={!state.dglab.connected}
-            variant="secondary"
-            icon={<Unplug size={17} />}
-            onClick={() =>
-              runAction("disconnect", "DG-LAB 已断开", async () => {
-                await api("/dglab/disconnect", { method: "POST" });
-                return api<UiState>("/ui/state");
-              })
-            }
-          >
-            断开
-          </ActionButton>
-          <ActionButton
-            busy={busy === "qr"}
-            disabled={!state.dglab.enabled}
-            icon={<Link2 size={17} />}
-            onClick={() =>
-              runAction("qr", "配对码已更新", async () => {
-                await api("/dglab/qr");
-                setQrVersion((value) => value + 1);
-                return api<UiState>("/ui/state");
-              })
-            }
-          >
-            生成配对码
-          </ActionButton>
-        </div>
+      <div className="runtime-composer">
+        <section className="runtime-block command-block" aria-label="运行操作">
+          <h3>
+            <Power size={16} /> 控制
+          </h3>
+          <div className="command-row">
+            <ActionButton busy={busy === "start"} disabled={state.safety.armed} icon={<Play size={17} />} onClick={() => runAction("start", "反馈已启动", () => api<UiState>("/ui/start", { method: "POST" }))}>
+              启动反馈
+            </ActionButton>
+            <ActionButton
+              busy={busy === "stop"}
+              disabled={!state.safety.armed && !state.dglab.connected}
+              variant="secondary"
+              icon={<Square size={17} />}
+              onClick={() => runAction("stop", "反馈已停止", () => api<UiState>("/ui/stop", { method: "POST" }))}
+            >
+              停止反馈
+            </ActionButton>
+            <ActionButton
+              busy={busy === "panic"}
+              variant="danger"
+              icon={<AlertTriangle size={17} />}
+              onClick={() =>
+                runAction("panic", "已执行紧急停止", async () => {
+                  await api("/control/panic", { method: "POST" });
+                  return api<UiState>("/ui/state");
+                })
+              }
+            >
+              紧急停止
+            </ActionButton>
+            <ActionButton
+              busy={busy === "test-shock"}
+              disabled={!state.dglab.bound || (!state.safety.dryRun && !state.safety.armed)}
+              variant="secondary"
+              icon={<PlugZap size={17} />}
+              onClick={() =>
+                runAction("test-shock", state.safety.dryRun ? "预览测试已记录" : "测试电击已发送", async () =>
+                  api<UiState>("/ui/test-shock", {
+                    method: "POST",
+                    body: JSON.stringify({ channel: "A", intensity: 0.05, durationMs: 220 })
+                  })
+                )
+              }
+            >
+              测试电击
+            </ActionButton>
+          </div>
+          <div className="runtime-switches">
+            <label className="runtime-toggle compact-toggle">
+              <input
+                type="checkbox"
+                checked={state.safety.dryRun}
+                disabled={busy === "preview-mode"}
+                onChange={(event) =>
+                  runAction("preview-mode", event.target.checked ? "预览模式已开启" : "设备输出已开启", () =>
+                    api<UiState>("/ui/settings", {
+                      method: "POST",
+                      body: JSON.stringify({ dryRun: event.target.checked })
+                    })
+                  )
+                }
+              />
+              <span>
+                <strong>预览模式</strong>
+                <small>只记录计划，不发送真实设备输出</small>
+              </span>
+            </label>
+            {isDesktopRuntime && (
+              <label className="runtime-toggle compact-toggle">
+                <input type="checkbox" checked={runInBackground} onChange={(event) => void updateRunInBackground(event.target.checked)} />
+                <span>
+                  <strong>在后台运行</strong>
+                  <small>关闭窗口后保留服务</small>
+                </span>
+              </label>
+            )}
+          </div>
+        </section>
+
+        <section className="runtime-block pairing-block" aria-label="设备配对">
+          <div className="runtime-block-title">
+            <h3>
+              <QrCode size={16} /> 配对
+            </h3>
+            <span className={`mini-state ${linkTone}`}>{dglabLinkLabel(state)}</span>
+          </div>
+          <div className="pairing-layout">
+            <div className="qr-box">
+              {qrSrc ? <img src={qrSrc} alt="DG-LAB 配对二维码" /> : <QrCode size={50} strokeWidth={1.5} />}
+            </div>
+            <div className="pairing-actions">
+              <div className="qr-actions">
+                <ActionButton
+                  busy={busy === "connect"}
+                  disabled={!state.dglab.enabled || state.dglab.connected}
+                  variant="secondary"
+                  icon={<PlugZap size={17} />}
+                  onClick={() =>
+                    runAction("connect", "DG-LAB 已连接", async () => {
+                      await api("/dglab/connect", { method: "POST" });
+                      return api<UiState>("/ui/state");
+                    })
+                  }
+                >
+                  连接
+                </ActionButton>
+                <ActionButton
+                  busy={busy === "disconnect"}
+                  disabled={!state.dglab.connected}
+                  variant="secondary"
+                  icon={<Unplug size={17} />}
+                  onClick={() =>
+                    runAction("disconnect", "DG-LAB 已断开", async () => {
+                      await api("/dglab/disconnect", { method: "POST" });
+                      return api<UiState>("/ui/state");
+                    })
+                  }
+                >
+                  断开
+                </ActionButton>
+                <ActionButton
+                  busy={busy === "qr"}
+                  disabled={!state.dglab.enabled}
+                  icon={<Link2 size={17} />}
+                  onClick={() =>
+                    runAction("qr", "配对码已更新", async () => {
+                      await api("/dglab/qr");
+                      setQrVersion((value) => value + 1);
+                      return api<UiState>("/ui/state");
+                    })
+                  }
+                >
+                  生成配对码
+                </ActionButton>
+              </div>
+              <div className={`link-state ${linkTone}`}>
+                <strong>{state.dglab.bound ? "APP 已绑定" : state.dglab.connected ? "等待扫码绑定" : "等待 Socket 连接"}</strong>
+                <span>{state.dglab.bound ? "预览与受控测试可用" : state.dglab.connected ? "生成配对码后用 DG-LAB APP 扫码" : "DG-LAB Socket V2 未连接"}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="runtime-block detail-block" aria-label="运行状态明细">
+          <h3>
+            <Activity size={16} /> 状态明细
+          </h3>
+          <div className="runtime-status">
+            <StatusLine label="每分钟窗口" value={`${state.safety.recentEventsInWindow ?? 0}/${state.safety.maxEventsPerMinute}`} />
+            <StatusLine label="DG-LAB Socket" value={state.dglab.socketUrl ?? "未启用"} />
+            <StatusLine label="Client ID" value={state.dglab.clientId ?? "等待分配"} />
+            <StatusLine label="Target ID" value={state.dglab.targetId ?? "等待 APP"} />
+            <StatusLine label="配对码" value={state.dglab.qrLink ?? state.dglab.lastError ?? "等待生成"} />
+          </div>
+        </section>
       </div>
-      <div className={`link-state ${state.dglab.bound ? "ok" : state.dglab.connected ? "warn" : "neutral"}`}>
-        <strong>{dglabLinkLabel(state)}</strong>
-        <span>{state.dglab.bound ? "已绑定 · 预览/受控测试可用" : state.dglab.connected ? "Socket 已连接 · 等待扫码" : "等待连接 DG-LAB Socket V2"}</span>
-      </div>
-      <p className="mono">{state.dglab.qrLink ?? state.dglab.lastError ?? "等待生成 clientId"}</p>
     </section>
   );
 }
@@ -646,24 +670,66 @@ function SettingsPanel({
     <section className="panel settings-panel">
       <PanelTitle icon={<SlidersHorizontal size={18} />} title="安全与反馈参数" action={dirty ? "未保存" : "已同步"} />
       <div className="settings-layout">
-        <section className="field-group">
-          <h3>
-            <ShieldCheck size={16} /> 安全限制
-          </h3>
-          <div className="inline-fields">
-            <NumberField label="A 通道上限" value={draft.safety.channelLimits.A} min={0} max={100} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, channelLimits: { ...current.safety.channelLimits, A: value } } }))} />
-            <NumberField label="B 通道上限" value={draft.safety.channelLimits.B} min={0} max={100} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, channelLimits: { ...current.safety.channelLimits, B: value } } }))} />
-            <NumberField label="单次最长 ms" value={draft.safety.maxContinuousOutputMs} min={1} max={30000} step={100} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxContinuousOutputMs: value } }))} />
-            <NumberField label="每分钟上限" value={draft.safety.maxEventsPerMinute} min={1} max={600} onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxEventsPerMinute: value } }))} />
+        <section className="settings-section safety-section">
+          <div className="settings-section-title">
+            <h3>
+              <ShieldCheck size={16} /> 安全限制
+            </h3>
+            <span>硬上限</span>
+          </div>
+          <div className="safety-grid">
+            <SafetyControl
+              label="A 通道上限"
+              value={draft.safety.channelLimits.A}
+              min={0}
+              max={100}
+              unit="%"
+              onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, channelLimits: { ...current.safety.channelLimits, A: value } } }))}
+            />
+            <SafetyControl
+              label="B 通道上限"
+              value={draft.safety.channelLimits.B}
+              min={0}
+              max={100}
+              unit="%"
+              onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, channelLimits: { ...current.safety.channelLimits, B: value } } }))}
+            />
+            <SafetyControl
+              label="单次最长"
+              value={draft.safety.maxContinuousOutputMs}
+              min={100}
+              max={30000}
+              step={100}
+              unit="ms"
+              onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxContinuousOutputMs: value } }))}
+            />
+            <SafetyControl
+              label="每分钟上限"
+              value={draft.safety.maxEventsPerMinute}
+              min={1}
+              max={600}
+              unit="次"
+              onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxEventsPerMinute: value } }))}
+            />
           </div>
         </section>
 
-        <PulseEditor title="请求开始" value={draft.policy.requestStarted} onChange={(next) => updatePulse("requestStarted", next)} />
-        <PulseEditor title="响应开始" value={draft.policy.responseStarted} onChange={(next) => updatePulse("responseStarted", next)} />
-        <ChunkEditor value={draft.policy.responseChunk} onChange={updateChunk} />
-        <PulseEditor title="工具调用" value={draft.policy.responseToolCall} onChange={(next) => updatePulse("responseToolCall", next)} />
-        <PulseEditor title="错误返回" value={draft.policy.responseErrorStatus} onChange={(next) => updatePulse("responseErrorStatus", next)} />
-        <PulseEditor title="响应完成" value={draft.policy.responseDone} onChange={(next) => updatePulse("responseDone", next)} />
+        <section className="settings-section feedback-section">
+          <div className="settings-section-title">
+            <h3>
+              <SlidersHorizontal size={16} /> 反馈规则
+            </h3>
+            <span>事件映射</span>
+          </div>
+          <div className="policy-grid">
+            <PulseEditor title="请求开始" value={draft.policy.requestStarted} onChange={(next) => updatePulse("requestStarted", next)} />
+            <PulseEditor title="响应开始" value={draft.policy.responseStarted} onChange={(next) => updatePulse("responseStarted", next)} />
+            <ChunkEditor value={draft.policy.responseChunk} onChange={updateChunk} />
+            <PulseEditor title="工具调用" value={draft.policy.responseToolCall} onChange={(next) => updatePulse("responseToolCall", next)} />
+            <PulseEditor title="错误返回" value={draft.policy.responseErrorStatus} onChange={(next) => updatePulse("responseErrorStatus", next)} />
+            <PulseEditor title="响应完成" value={draft.policy.responseDone} onChange={(next) => updatePulse("responseDone", next)} />
+          </div>
+        </section>
       </div>
       <div className="panel-footer">
         <ActionButton
@@ -704,6 +770,38 @@ function SettingsPanel({
         </ActionButton>
       </div>
     </section>
+  );
+}
+
+function SafetyControl({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  unit,
+  onChange
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  unit: string;
+  onChange: (value: number) => void;
+}) {
+  const update = (next: number) => onChange(clampNumber(next, min, max));
+  return (
+    <label className="safety-control">
+      <span>
+        <strong>{label}</strong>
+        <em>
+          {value}
+          {unit}
+        </em>
+      </span>
+      <input type="number" min={min} max={max} step={step} value={value} onChange={(event) => update(Number(event.target.value))} />
+    </label>
   );
 }
 
@@ -753,11 +851,11 @@ function PlansPanel({ plans }: { plans: ShockPlanRecord[] }) {
 
 function PulseEditor({ title, value, onChange }: { title: string; value: PulsePolicy; onChange: (value: PulsePolicy) => void }) {
   return (
-    <section className="field-group">
+    <section className="field-group pulse-card">
       <h3>
         <Zap size={16} /> {title}
       </h3>
-      <div className="compact-fields">
+      <div className="compact-fields pulse-fields">
         <ChannelSelect value={value.channel} onChange={(channel) => onChange({ ...value, channel })} />
         <CoefficientField value={value.coefficient} onChange={(coefficient) => onChange({ ...value, coefficient })} />
         <NumberField label="持续 ms" value={value.durationMs} min={1} max={30000} step={10} onChange={(durationMs) => onChange({ ...value, durationMs })} />
@@ -768,11 +866,11 @@ function PulseEditor({ title, value, onChange }: { title: string; value: PulsePo
 
 function ChunkEditor({ value, onChange }: { value: ChunkPolicy; onChange: (value: ChunkPolicy) => void }) {
   return (
-    <section className="field-group">
+    <section className="field-group pulse-card stream-card">
       <h3>
         <Activity size={16} /> 流式输出
       </h3>
-      <div className="compact-fields">
+      <div className="compact-fields stream-fields">
         <ChannelSelect value={value.channel} onChange={(channel) => onChange({ ...value, channel })} />
         <CoefficientField value={value.coefficient} onChange={(coefficient) => onChange({ ...value, coefficient })} />
         <MicroIntensityField value={value.microIntensity} onChange={(microIntensity) => onChange({ ...value, microIntensity })} />
@@ -791,9 +889,32 @@ function NumberField({ label, value, min, max, step = 1, onChange }: { label: st
 }
 
 function CoefficientField({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const update = (next: number) => onChange(clampNumber(next, 0, 1));
+
   return (
     <Field label="强度系数">
-      <input type="number" min={0} max={1} step={0.1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <div className="coefficient-control">
+        <input
+          className="coefficient-slider"
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={value}
+          aria-label="强度系数滑块"
+          onChange={(event) => update(Number(event.target.value))}
+        />
+        <input
+          className="coefficient-number"
+          type="number"
+          min={0}
+          max={1}
+          step={0.05}
+          value={value}
+          aria-label="强度系数数值"
+          onChange={(event) => update(Number(event.target.value))}
+        />
+      </div>
     </Field>
   );
 }
@@ -801,7 +922,7 @@ function CoefficientField({ value, onChange }: { value: number; onChange: (value
 function MicroIntensityField({ value, onChange }: { value: number; onChange: (value: number) => void }) {
   return (
     <Field label="微电流强度">
-      <input type="number" min={0} max={1} step={0.1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input type="number" min={0} max={1} step={0.1} value={value} onChange={(event) => onChange(clampNumber(Number(event.target.value), 0, 1))} />
     </Field>
   );
 }
@@ -809,10 +930,13 @@ function MicroIntensityField({ value, onChange }: { value: number; onChange: (va
 function ChannelSelect({ value, onChange }: { value: Channel; onChange: (value: Channel) => void }) {
   return (
     <Field label="通道">
-      <select value={value} onChange={(event) => onChange(event.target.value as Channel)}>
-        <option value="A">A</option>
-        <option value="B">B</option>
-      </select>
+      <div className="channel-toggle" role="group" aria-label="通道">
+        {(["A", "B"] as Channel[]).map((channel) => (
+          <button className={value === channel ? "active" : ""} key={channel} type="button" onClick={() => onChange(channel)}>
+            {channel}
+          </button>
+        ))}
+      </div>
     </Field>
   );
 }
@@ -910,6 +1034,11 @@ function dglabLinkLabel(state: UiState): string {
   if (state.dglab.bound) return "APP 已配对";
   if (state.dglab.connected) return "Socket 已连接";
   return "未连接";
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (Number.isNaN(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 function matchingPreset(provider: ProviderDraft): string {

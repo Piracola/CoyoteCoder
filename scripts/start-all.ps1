@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$bridgeDir = Join-Path $root "coyote-codex-bridge"
+$appDir = Join-Path $root "app"
 $dglabDir = Join-Path $root "DG-LAB-OPENSOURCE\socket\v2\backend"
 $logDir = Join-Path $root ".test-logs"
 $runtimeDir = Join-Path $root ".runtime"
@@ -78,7 +78,7 @@ function Test-CoyoteCoderProcess {
   param([int]$ProcessId)
 
   $commandLine = Get-ProcessCommandLine -ProcessId $ProcessId
-  return ($commandLine -like "*coyote-codex-bridge*" -and
+  return ($commandLine -like "*CoyoteCoder*" -and
     ($commandLine -like "*src/index.ts*" -or $commandLine -like "*dist/src/index.js*"))
 }
 
@@ -90,7 +90,7 @@ function Test-CoyoteCoderPort {
 
   try {
     $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 2 -ErrorAction Stop
-    if ($health.service -eq "coyote-codex-bridge") {
+    if ($health.service -eq "coyotecoder") {
       return $true
     }
   } catch {
@@ -181,7 +181,7 @@ function Test-PathInside {
 
 function Remove-BuildArtifacts {
   foreach ($path in $cleanupPaths) {
-    if ((Test-Path -LiteralPath $path) -and (Test-PathInside -Path $path -Parent $bridgeDir)) {
+    if ((Test-Path -LiteralPath $path) -and (Test-PathInside -Path $path -Parent $appDir)) {
       Write-Host "Cleaning build artifact: $path"
       Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -199,7 +199,7 @@ function Start-CleanupWatchdog {
     ParentPid = [int]$PID
     ManagedPids = $managedProcessIds
     CleanupPaths = $cleanupPathValues
-    BridgeDir = [string](Resolve-FullPath -Path $bridgeDir)
+    AppDir = [string](Resolve-FullPath -Path $appDir)
     RuntimeDir = [string](Resolve-FullPath -Path $runtimeDir)
     RuntimeScript = [string]$cleanupScriptPath
   }
@@ -251,7 +251,7 @@ foreach (`$managedPid in `$payload.ManagedPids) {
 }
 
 foreach (`$path in `$payload.CleanupPaths) {
-  if ((Test-Path -LiteralPath `$path) -and (Test-PathInside -Path `$path -Parent `$payload.BridgeDir)) {
+  if ((Test-Path -LiteralPath `$path) -and (Test-PathInside -Path `$path -Parent `$payload.AppDir)) {
     Remove-Item -LiteralPath `$path -Recurse -Force
   }
 }
@@ -323,13 +323,13 @@ function Wait-Port {
 Stop-PreviousProcess "dglab-backend"
 Stop-PreviousProcess "coyote"
 
-$cleanupPaths.Add((Join-Path $bridgeDir "dist")) | Out-Null
-$cleanupPaths.Add((Join-Path $bridgeDir "src-ui\dist")) | Out-Null
+$cleanupPaths.Add((Join-Path $appDir "dist")) | Out-Null
+$cleanupPaths.Add((Join-Path $appDir "src-ui\dist")) | Out-Null
 
 if ($Build) {
   Write-Host "Building CoyoteCoder UI/API..."
   Remove-BuildArtifacts
-  Push-Location $bridgeDir
+  Push-Location $appDir
   try {
     & npm.cmd run build
   } finally {
@@ -354,7 +354,7 @@ $CoyotePort = Resolve-CoyotePort -PreferredPort $CoyotePort
 Write-Host "Starting CoyoteCoder UI/API..."
 Start-NpmProcess `
   -Name "coyote" `
-  -WorkingDirectory $bridgeDir `
+  -WorkingDirectory $appDir `
   -Arguments $(if ($Build) { @("start") } else { @("run", "dev") }) `
   -Environment @{
     COYOTE_CONFIG = $CoyoteConfig

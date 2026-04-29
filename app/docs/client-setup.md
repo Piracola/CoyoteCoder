@@ -13,7 +13,7 @@ Any agent client that can set a custom OpenAI-compatible API base URL should be 
 Start the proxy:
 
 ```powershell
-cd "I:\JBCode\AI Tools\CoyoteCoder\coyote-codex-bridge"
+cd "I:\JBCode\AI Tools\CoyoteCoder\app"
 npm run dev
 ```
 
@@ -59,9 +59,11 @@ CoyoteCoder forwards OpenAI-compatible providers directly. For Anthropic and Gem
 
 - `/v1/*` requests are proxied to the configured upstream.
 - `/v1/models` returns the selected upstream provider's model list in an OpenAI-compatible shape.
-- `/v1/chat/completions` and `/v1/responses` emit Coyote events.
+- `/v1/models/:model` returns a selected model in an OpenAI-compatible shape when the upstream supports model lookup.
+- `/v1/chat/completions`, `/v1/responses`, and `/v1/completions` emit Coyote events.
 - OpenAI-compatible upstreams are relayed without changing the stream format.
 - Anthropic and Gemini upstreams are translated back into OpenAI-compatible JSON or SSE responses for the downstream client.
+- Gemini upstreams support `/v1/embeddings` translation.
 - Shock plans remain dry-run by default.
 
 Useful checks:

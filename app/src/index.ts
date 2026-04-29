@@ -1,5 +1,6 @@
 import { loadConfig } from "./config/loadConfig.js";
 import { DglabController } from "./dglab/controller.js";
+import { startLocalDglabRelay } from "./dglab/relay.js";
 import { DglabSink } from "./dglab/sink.js";
 import { EventBus } from "./events/bus.js";
 import { buildServer } from "./proxy/server.js";
@@ -13,6 +14,7 @@ const config = loadConfig();
 const bus = new EventBus(config.privacy.recent_event_limit);
 const safety = new SafetyGate(config.safety);
 const policy = new ShockPolicy(config.policy);
+const dglabRelay = config.dglab.enabled ? await startLocalDglabRelay(config.dglab) : undefined;
 const dglab = config.dglab.enabled ? new DglabController(config.dglab, bus) : undefined;
 const sink = dglab ? new DglabSink(dglab) : new DryRunSink();
 const shockPlans = new ShockPlanStore(config.privacy.recent_event_limit);
@@ -24,6 +26,7 @@ if (config.safety.panic_zero_on_exit) {
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, sending best-effort panic zero`);
     safety.panic();
+    await dglabRelay?.close();
     await app.close();
     process.exit(0);
   };
