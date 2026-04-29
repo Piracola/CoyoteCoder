@@ -1,4 +1,4 @@
-name: Build Windows Portable
+name: windows
 
 on:
   workflow_dispatch:
@@ -15,8 +15,8 @@ permissions:
   contents: write
 
 jobs:
-  portable-windows:
-    name: Portable Windows zip
+  windows:
+    name: windows
     runs-on: windows-latest
     defaults:
       run:
@@ -103,7 +103,7 @@ jobs:
           $outputRoot = Join-Path (Resolve-Path "..") "dist"
           New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
           $portableDir = Join-Path $outputRoot "portable\CoyoteCoder"
-          $zipName = "CoyoteCoder-$env:APP_VERSION-windows-portable.zip"
+          $zipName = "windows-$env:APP_VERSION.zip"
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
           New-Item -ItemType Directory -Force -Path (Join-Path $portableDir "src-ui") | Out-Null
 
@@ -119,8 +119,8 @@ jobs:
       - name: Upload portable zip
         uses: actions/upload-artifact@v7
         with:
-          name: CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable
-          path: dist/CoyoteCoder-${{ steps.version.outputs.version }}-windows-portable.zip
+          name: windows-${{ steps.version.outputs.version }}
+          path: dist/windows-${{ steps.version.outputs.version }}.zip
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -130,7 +130,7 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $tagName = "v$version"
-          $zipPath = "..\dist\CoyoteCoder-$version-windows-portable.zip"
+          $zipPath = "..\dist\windows-$version.zip"
           $title = "CoyoteCoder $version"
           $notes = "Windows portable build for CoyoteCoder $version."
 
