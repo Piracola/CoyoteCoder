@@ -9,7 +9,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)
 
-CoyoteCoder 是一个为 Vibe Coding 场景适配的本地LLM监听工具。
+CoyoteCoder 是一个为 Vibe Coding 场景适配的本地监听工具。
 
 它位于你的 AI 客户端与上游大模型服务之间，负责监听模型响应，并将相应的反馈指令发送至 DG-LAB 设备。
 
