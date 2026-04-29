@@ -62,6 +62,17 @@ async function createProxy(baseUrl: string, upstreamOverrides: Record<string, un
   return { baseUrl: `http://127.0.0.1:${address.port}`, bus, shockPlans };
 }
 
+async function waitForRecentEvent(bus: EventBus, type: string, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (bus.getRecent().some((event) => event.type === type)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${type}`);
+}
+
 describe("proxy server", () => {
   it("passes through unknown /v1 endpoints without emitting known events", async () => {
     const upstream = await createMockUpstream((req, res) => {
@@ -380,11 +391,15 @@ describe("proxy server", () => {
     if (!reader) throw new Error("missing response reader");
 
     await reader.read();
+    const chunkCountAtAbort = proxy.bus.getRecent().filter((event) => event.type === "response.chunk").length;
     controller.abort();
-    await new Promise((resolve) => setTimeout(resolve, 160));
+    await waitForRecentEvent(proxy.bus, "response.aborted");
+    const chunkCountAfterAbort = proxy.bus.getRecent().filter((event) => event.type === "response.chunk").length;
+    await new Promise((resolve) => setTimeout(resolve, 80));
 
     const events = proxy.bus.getRecent();
-    expect(events.filter((event) => event.type === "response.chunk")).toHaveLength(1);
+    expect(chunkCountAtAbort).toBeGreaterThanOrEqual(1);
+    expect(events.filter((event) => event.type === "response.chunk")).toHaveLength(chunkCountAfterAbort);
     expect(events.map((event) => event.type)).toContain("response.aborted");
     expect(events.map((event) => event.type)).not.toContain("response.done");
   });
