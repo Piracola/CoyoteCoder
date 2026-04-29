@@ -9,9 +9,9 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)
 
-CoyoteCoder 是一个为 Vibe Coding 场景适配的本地监听工具。
+CoyoteCoder 是一个为 Vibe Coding 场景适配的郊狼插件。
 
-它位于你的 AI 客户端与上游大模型服务之间，负责监听模型响应，并将相应的反馈指令发送至 DG-LAB 设备。
+它位于你的 AI 客户端与上游大模型服务之间，负责监听模型响应，并将相应的反馈指令发送至郊狼。
 
 让 Vibe Coding 更有参与感。
 
@@ -19,19 +19,21 @@ CoyoteCoder 是一个为 Vibe Coding 场景适配的本地监听工具。
 
 ## ✨ 核心特性
 
+- **监听事件**：开始请求、响应开始、流式输出、工具调用、错误返回、响应完成事件。
 - **无缝接入**：下游客户端继续使用兼容 OpenAI 的 API 格式，只需修改 Base URL。
-- **可视化管理**：内置 Web/桌面控制台，集中配置上游模型、API Key 及 DG-LAB 配对状态。
+- **可视化管理**：内置 Web/桌面控制台，集中配置上游模型、API Key 及郊狼配对状态。
 - **隐私优先**：默认不保存原始请求内容，仅记录统计信息，减少提示词与 API Key 暴露风险。
 - **安全机制**：首次启动默认进入“预览模式”（仅记录计划，不输出到物理设备），内置紧急停止（Panic）接口。
 
-***
+本项目并不需要模型主动决定是否发送电击指令，而是根据上游响应发送电击指令，体感上类似“模型一写说话就电击使用者”。
+
 
 ## 🚀 快速开始
 
-1. 在 [Releases](https://github.com/Piracola/CoyoteCoder/releases) 下载最新 Windows 便携版（zip）并解压。
+1. 在 [Releases](https://github.com/Piracola/CoyoteCoder/releases) 下载最新 Windows 版本并解压。
 2. 运行 `CoyoteCoder.exe` 启动主程序（首次运行会自动生成 `config.yaml` 配置文件）。
 3. 在弹出的控制台中，前往“API 供应商”填写你的上游模型服务和 API Key。
-4. 将你的下游 AI 客户端的 Base URL 修改为：<http://127.0.0.1:8787/v1>
+4. 将你使用的 AI 客户端（如 Codex、Claude code 等）的 上游模型服务地址修改为：<http://127.0.0.1:8787/v1>
 
 *(注：如需卸载，直接删除解压文件夹即可。)*
 
@@ -67,7 +69,6 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 - [架构说明](./docs/architecture.md)
 - [DG-LAB 协议备注](./docs/protocol-notes.md)
 
-***
 
 ## ❤️ 致谢
 
