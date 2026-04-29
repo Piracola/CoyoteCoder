@@ -9,11 +9,13 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)
 
-CoyoteCoder 是一个运行在本地的 LLM 代理中转工具。它位于你的 AI 客户端与上游大模型服务之间，负责监听模型响应，并将相应的反馈指令发送至 DG-LAB 设备。
+CoyoteCoder 是一个为 Vibe Coding 场景适配的本地LLM监听工具。
+
+它位于你的 AI 客户端与上游大模型服务之间，负责监听模型响应，并将相应的反馈指令发送至 DG-LAB 设备。
+
+让 Vibe Coding 更有参与感。
 
 </div>
-
-
 
 ## ✨ 核心特性
 
@@ -22,14 +24,14 @@ CoyoteCoder 是一个运行在本地的 LLM 代理中转工具。它位于你的
 - **隐私优先**：默认不保存原始请求内容，仅记录统计信息，减少提示词与 API Key 暴露风险。
 - **安全机制**：首次启动默认进入“预览模式”（仅记录计划，不输出到物理设备），内置紧急停止（Panic）接口。
 
----
+***
 
 ## 🚀 快速开始
 
 1. 在 [Releases](https://github.com/Piracola/CoyoteCoder/releases) 下载最新 Windows 便携版（zip）并解压。
 2. 运行 `CoyoteCoder.exe` 启动主程序（首次运行会自动生成 `config.yaml` 配置文件）。
 3. 在弹出的控制台中，前往“API 供应商”填写你的上游模型服务和 API Key。
-4. 将你的下游 AI 客户端的 Base URL 修改为：http://127.0.0.1:8787/v1
+4. 将你的下游 AI 客户端的 Base URL 修改为：<http://127.0.0.1:8787/v1>
 
 *(注：如需卸载，直接删除解压文件夹即可。)*
 
@@ -42,6 +44,7 @@ CoyoteCoder 是一个运行在本地的 LLM 代理中转工具。它位于你的
 
 **🚨 紧急停止 (Panic) 接口**
 如遇异常，可立即调用此接口阻断输出：
+
 ```
 Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 ```
@@ -51,14 +54,13 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 程序运行后会在同级目录生成 `config.yaml`。你可以通过控制台或直接修改文件来调整进阶参数，例如更改服务端口或 Socket 地址。
 
 若未运行桌面端 GUI，或需在局域网内管理，可通过浏览器直接访问 Web 控制台：
-http://127.0.0.1:8787/ui
-
+<http://127.0.0.1:8787/ui>
 
 ## 🛠️ 开发者指南
 
 关于本地开发、构建打包、接口规范及验证命令，请参阅 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
----
+***
 
 ## ❤️ 致谢
 
