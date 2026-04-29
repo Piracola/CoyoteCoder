@@ -4,7 +4,7 @@
 
 # CoyoteCoder
 
-[![Build Windows Portable](https://github.com/Piracola/CoyoteCoder/actions/workflows/portable-windows.yml/badge.svg)](https://github.com/Piracola/CoyoteCoder/actions/workflows/portable-windows.yml)
+[![Build Windows](https://github.com/Piracola/CoyoteCoder/actions/workflows/windows.yml/badge.svg)](https://github.com/Piracola/CoyoteCoder/actions/workflows/windows.yml)
 [![Latest Release](https://img.shields.io/github/v/release/Piracola/CoyoteCoder?label=release)](https://github.com/Piracola/CoyoteCoder/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)
