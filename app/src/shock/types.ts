@@ -6,6 +6,8 @@ export interface ShockPlan {
   intensity: number;
   durationMs: number;
   reason: string;
+  waveId?: string;
+  continuous?: boolean;
 }
 
 export interface ShockSink {

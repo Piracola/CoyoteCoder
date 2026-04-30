@@ -18,6 +18,8 @@ CoyoteCoder now includes a DG-LAB Socket V2 controller path:
 
 The default state is still safe: `safety.dry_run: true` and `safety.armed: false`. Real device output requires disabling dry-run and arming feedback intentionally.
 
+CoyoteCoder can load DG-LAB V3 waveform files from `waveforms/` or `COYOTE_WAVEFORMS_DIR`. Policy entries may reference a `waveform_id`; missing IDs fall back to built-in waveforms.
+
 Useful protocol references:
 
 ```text

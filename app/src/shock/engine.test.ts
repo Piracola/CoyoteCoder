@@ -41,7 +41,7 @@ describe("ShockEngine", () => {
         requestId: "req_test",
         outcome: "sent",
         input: { kind: "shock.plan", channel: "B" },
-        output: { kind: "shock.plan", channel: "B", intensity: 0.1 }
+        output: { kind: "shock.plan", channel: "B", intensity: 0.1, continuous: true }
       }
     ]);
   });
@@ -133,7 +133,34 @@ describe("ShockEngine", () => {
     });
 
     expect(sink.plans).toMatchObject([
-      { channel: "B", intensity: 0.1, durationMs: 120, reason: "response.chunk" }
+      { channel: "B", intensity: 0.1, durationMs: 2000, reason: "response.chunk", continuous: true }
     ]);
+  });
+
+  it("coalesces rapid streaming chunks before they reach safety limits", async () => {
+    const config = configSchema.parse({
+      safety: { max_events_per_minute: 2, channel_limits: { A: 100, B: 100 } }
+    });
+    const bus = new EventBus(20);
+    const sink = new CapturingSink();
+    const store = new ShockPlanStore(20);
+    const engine = new ShockEngine(bus, new ShockPolicy(config.policy), new SafetyGate(config.safety), sink, store);
+
+    for (let index = 0; index < 5; index += 1) {
+      await engine.emitPlansFor({
+        type: "response.chunk",
+        requestId: "req_stream",
+        timestamp: 1_000 + index * 100,
+        bytes: 20,
+        chars: 20,
+        deltaMs: 100,
+        cumulativeChars: 20 * (index + 1),
+        streamRateCharsPerSec: 200
+      });
+    }
+
+    expect(sink.plans).toHaveLength(1);
+    expect(store.getRecent()).toHaveLength(1);
+    expect(store.getRecent()[0]).toMatchObject({ eventType: "response.chunk", outcome: "sent" });
   });
 });

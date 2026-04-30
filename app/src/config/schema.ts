@@ -3,6 +3,7 @@ import { z } from "zod";
 const channelSchema = z.enum(["A", "B"]);
 const upstreamProtocolSchema = z.enum(["openai", "anthropic", "gemini"]);
 const coefficientSchema = z.coerce.number().min(0).max(1).transform((value) => Math.round(value * 10) / 10);
+const waveformIdSchema = z.string().trim().min(1).optional();
 const objectWithDefaults = <Shape extends z.ZodRawShape>(shape: Shape) =>
   z.preprocess((value) => value ?? {}, z.object(shape));
 
@@ -56,34 +57,40 @@ export const configSchema = z.object({
     request_started: objectWithDefaults({
       channel: channelSchema.default("A"),
       coefficient: coefficientSchema.default(1),
-      duration_ms: z.coerce.number().int().positive().default(120)
+      duration_ms: z.coerce.number().int().positive().default(120),
+      waveform_id: waveformIdSchema
     }),
     response_started: objectWithDefaults({
       channel: channelSchema.default("B"),
       coefficient: coefficientSchema.default(1),
-      duration_ms: z.coerce.number().int().positive().default(120)
+      duration_ms: z.coerce.number().int().positive().default(120),
+      waveform_id: waveformIdSchema
     }),
     response_chunk: objectWithDefaults({
       channel: channelSchema.default("B"),
       coefficient: coefficientSchema.default(1),
       micro_intensity: coefficientSchema.default(0.1),
-      duration_ms: z.coerce.number().int().positive().default(120)
+      duration_ms: z.coerce.number().int().positive().default(2000),
+      waveform_id: waveformIdSchema
     }),
     response_tool_call: objectWithDefaults({
       channel: channelSchema.default("A"),
       coefficient: coefficientSchema.default(1),
-      duration_ms: z.coerce.number().int().positive().default(160)
+      duration_ms: z.coerce.number().int().positive().default(160),
+      waveform_id: waveformIdSchema
     }),
     response_error_status: objectWithDefaults({
       channel: channelSchema.default("A"),
       coefficient: coefficientSchema.default(1),
-      duration_ms: z.coerce.number().int().positive().default(220)
+      duration_ms: z.coerce.number().int().positive().default(220),
+      waveform_id: waveformIdSchema
     }),
     response_done: objectWithDefaults({
       channel: channelSchema.default("A"),
       coefficient: coefficientSchema.default(1),
       duration_ms: z.coerce.number().int().positive().default(180),
-      token_target: z.coerce.number().int().positive().default(1200)
+      token_target: z.coerce.number().int().positive().default(1200),
+      waveform_id: waveformIdSchema
     })
   }),
   dglab: objectWithDefaults({

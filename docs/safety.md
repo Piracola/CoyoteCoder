@@ -8,6 +8,7 @@ CoyoteCoder defaults to dry-run mode. Keep dry-run enabled until the proxy, DG-L
 - `safety.armed: false` means real output is blocked even if dry-run is disabled.
 - `POST /control/panic` disarms the system and returns zero plans for both channels.
 - `panic_zero_on_exit: true` makes process shutdown attempt a best-effort zero output.
+- Custom waveforms and continuous streaming plans still pass through `SafetyGate` before any real output is sent.
 
 ## Preflight Checklist
 
@@ -39,6 +40,8 @@ Only test real output after the dry-run and pairing checks pass.
 3. Disable Dry-run only for the active test window.
 4. Keep the UI open with the `紧急停止` button visible.
 5. Re-enable Dry-run or click `停止反馈` immediately after the test.
+
+流式输出会合并高频 chunk，减少连续输出过密触发限流的概率；这只是体验优化，不替代 Safety 上限。
 
 ## Emergency Stop
 

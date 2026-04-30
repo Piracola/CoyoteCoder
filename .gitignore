@@ -10,8 +10,14 @@ coverage/
 
 # Portable build artifacts live under root dist/
 
+# User-imported DG-LAB waveforms
+/waveforms/*
+!/waveforms/README.md
+!/waveforms/example.json
+
 # Local config and logs
 .env
+/app/config.yaml
 *.local.yaml
 *.local.yml
 *.log

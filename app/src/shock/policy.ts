@@ -46,6 +46,9 @@ export class ShockPolicy {
       if (patch.responseChunk.durationMs !== undefined) {
         this.config.response_chunk.duration_ms = Math.max(1, Math.round(patch.responseChunk.durationMs));
       }
+      if (patch.responseChunk.waveformId !== undefined) {
+        this.config.response_chunk.waveform_id = patch.responseChunk.waveformId ?? undefined;
+      }
     }
   }
 
@@ -57,7 +60,8 @@ export class ShockPolicy {
           channel: this.config.request_started.channel,
           intensity: scaledIntensity(REQUEST_STARTED_BASE_INTENSITY, this.config.request_started.coefficient),
           durationMs: this.config.request_started.duration_ms,
-          reason: event.type
+          reason: event.type,
+          waveId: this.config.request_started.waveform_id
         }];
       case "response.started":
         return [{
@@ -65,7 +69,8 @@ export class ShockPolicy {
           channel: this.config.response_started.channel,
           intensity: scaledIntensity(RESPONSE_STARTED_BASE_INTENSITY, this.config.response_started.coefficient),
           durationMs: this.config.response_started.duration_ms,
-          reason: event.type
+          reason: event.type,
+          waveId: this.config.response_started.waveform_id
         }];
       case "response.chunk": {
         const charsFactor = clamp(event.chars / 800, 0, 1);
@@ -76,8 +81,10 @@ export class ShockPolicy {
           kind: "shock.plan",
           channel: this.config.response_chunk.channel,
           intensity: scaledIntensity(baseIntensity, this.config.response_chunk.coefficient),
-          durationMs: this.config.response_chunk.duration_ms,
-          reason: event.type
+          durationMs: Math.max(2000, this.config.response_chunk.duration_ms),
+          reason: event.type,
+          waveId: this.config.response_chunk.waveform_id,
+          continuous: true
         }];
       }
       case "response.tool_call":
@@ -86,7 +93,8 @@ export class ShockPolicy {
           channel: this.config.response_tool_call.channel,
           intensity: scaledIntensity(toolCallBaseIntensity(event.toolCallCount), this.config.response_tool_call.coefficient),
           durationMs: this.config.response_tool_call.duration_ms,
-          reason: event.type
+          reason: event.type,
+          waveId: this.config.response_tool_call.waveform_id
         }];
       case "response.error_status":
         return [{
@@ -94,7 +102,8 @@ export class ShockPolicy {
           channel: this.config.response_error_status.channel,
           intensity: scaledIntensity(errorStatusBaseIntensity(event.statusCode), this.config.response_error_status.coefficient),
           durationMs: this.config.response_error_status.duration_ms,
-          reason: event.type
+          reason: event.type,
+          waveId: this.config.response_error_status.waveform_id
         }];
       case "response.done":
         return [{
@@ -102,7 +111,8 @@ export class ShockPolicy {
           channel: this.config.response_done.channel,
           intensity: scaledIntensity(responseDoneBaseIntensity(this.config.response_done, event.outputTokens), this.config.response_done.coefficient),
           durationMs: this.config.response_done.duration_ms,
-          reason: event.type
+          reason: event.type,
+          waveId: this.config.response_done.waveform_id
         }];
       case "response.error":
       case "response.aborted":
@@ -128,6 +138,7 @@ export interface PolicySettingsPatch {
     coefficient?: number;
     microIntensity?: number;
     durationMs?: number;
+    waveformId?: string | null;
   };
 }
 
@@ -135,6 +146,7 @@ interface PulseSettingsPatch {
   channel?: "A" | "B";
   coefficient?: number;
   durationMs?: number;
+  waveformId?: string | null;
 }
 
 function responseDoneBaseIntensity(
@@ -166,7 +178,7 @@ function scaledIntensity(baseIntensity: number, coefficient: number): number {
 }
 
 function updateFeedbackConfig(
-  config: { channel: "A" | "B"; coefficient: number; duration_ms: number },
+  config: { channel: "A" | "B"; coefficient: number; duration_ms: number; waveform_id?: string },
   patch: PulseSettingsPatch
 ): void {
   if (patch.channel) {
@@ -177,6 +189,9 @@ function updateFeedbackConfig(
   }
   if (patch.durationMs !== undefined) {
     config.duration_ms = Math.max(1, Math.round(patch.durationMs));
+  }
+  if (patch.waveformId !== undefined) {
+    config.waveform_id = patch.waveformId ?? undefined;
   }
 }
 

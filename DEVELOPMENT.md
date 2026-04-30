@@ -51,6 +51,7 @@ npm run dev
 | `DGLAB_SOCKET_URL` | 覆盖 DG-LAB Socket V2 server 地址。 |
 | `DGLAB_QR_HOST` | 覆盖二维码中的主机名；默认 `auto`。 |
 | `DGLAB_QR_PORT` | 覆盖二维码中的 Socket V2 端口。 |
+| `COYOTE_WAVEFORMS_DIR` | 覆盖自定义 DG-LAB 波形目录。 |
 
 ## 构建流程
 
@@ -61,7 +62,7 @@ npm run dev
 3. `npm run build` 构建 Web 控制台和后端 JS。
 4. 使用 `@yao-pkg/pkg` 将后端打成 `dist/coyote-backend.exe`。
 5. `npm run tauri:build` 构建桌面端 `coyote-coder.exe`。
-6. 复制 exe、配置、README、图标和 UI dist，压缩成便携版 zip。
+6. 复制 exe、配置、README、图标、UI dist 和 `waveforms/` 示例，压缩成便携版 zip。
 
 ## 一键构建
 
@@ -125,6 +126,15 @@ npm run tauri:build
 - `GET /health`
 - `GET /status`
 - `GET /ui`
+- `GET /ui/state`
+- `POST /ui/settings`
+- `POST /ui/upstream`
+- `GET /ui/waveforms`
+- `POST /ui/waveforms/refresh`
+- `POST /ui/test-shock`
+- `GET /ui/qr.svg`
+- `GET /models`
+- `GET /models/:model`
 - `GET /v1/models`
 - `GET /v1/models/:model`
 - `POST /v1/chat/completions`

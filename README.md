@@ -22,6 +22,7 @@ CoyoteCoder 是一个为 Vibe Coding 场景适配的郊狼插件。
 - **监听事件**：开始请求、响应开始、流式输出、工具调用、错误返回、响应完成事件。
 - **无缝接入**：下游客户端继续使用兼容 OpenAI 的 API 格式，只需修改 Base URL。
 - **可视化管理**：内置 Web/桌面控制台，集中配置上游模型、API Key 及郊狼配对状态。
+- **自定义波形**：可把 DG-LAB V3 波形文件放入 `waveforms/`，在控制台里为不同事件选择波形。
 - **隐私优先**：默认不保存原始请求内容，仅记录统计信息，减少提示词与 API Key 暴露风险。
 - **安全机制**：首次启动默认进入“预览模式”（仅记录计划，不输出到物理设备），内置紧急停止（Panic）接口。
 
@@ -58,6 +59,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 若未运行桌面端 GUI，或需在局域网内管理，可通过浏览器直接访问 Web 控制台：
 <http://127.0.0.1:8787/ui>
 
+自定义波形放在程序目录的 `waveforms/` 下即可，示例见 [waveforms/README.md](./waveforms/README.md)。
+
 ## 🛠️ 开发者指南
 
 关于本地开发、构建打包、接口规范及验证命令，请参阅 [DEVELOPMENT.md](./DEVELOPMENT.md)。
@@ -68,6 +71,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 - [安全流程](./docs/safety.md)
 - [架构说明](./docs/architecture.md)
 - [DG-LAB 协议备注](./docs/protocol-notes.md)
+- [变更记录](./docs/change-record.md)
 
 
 ## ❤️ 致谢

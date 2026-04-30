@@ -1,29 +1,15 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import type { AppConfig } from "../config/schema.js";
+import type { CoyoteAppContext } from "../app/context.js";
 import { registerDglabRoutes } from "../api/dglabRoutes.js";
 import { registerShockRoutes } from "../api/shockRoutes.js";
 import { registerUiRoutes } from "../api/uiRoutes.js";
-import type { DglabController } from "../dglab/controller.js";
-import { EventBus } from "../events/bus.js";
 import type { ResponseChunkEvent } from "../events/types.js";
-import type { ShockPlanStore } from "../shock/planStore.js";
 import { shortId } from "../util/ids.js";
 import { registerControlRoutes } from "../api/controlRoutes.js";
-import type { ShockPolicy } from "../shock/policy.js";
-import type { SafetyGate } from "../shock/safety.js";
 import { SseParser } from "./sse.js";
 import { UpstreamClient } from "./upstream.js";
 
-interface ProxyContext {
-  config: AppConfig;
-  bus: EventBus;
-  safety: SafetyGate;
-  policy: ShockPolicy;
-  dglab?: DglabController;
-  shockPlans?: ShockPlanStore;
-}
-
-export function buildServer(context: ProxyContext): FastifyInstance {
+export function buildServer(context: CoyoteAppContext): FastifyInstance {
   const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
   const upstream = new UpstreamClient(context.config.upstream);
 
@@ -36,9 +22,10 @@ export function buildServer(context: ProxyContext): FastifyInstance {
     if (origin) {
       reply.header("access-control-allow-origin", origin);
       reply.header("vary", "origin");
+      reply.header("access-control-allow-credentials", "true");
     }
     reply.header("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-    reply.header("access-control-allow-headers", "content-type,authorization,x-api-key,x-goog-api-key,anthropic-version");
+    reply.header("access-control-allow-headers", requestedCorsHeaders(request) ?? "content-type,authorization,x-api-key,x-goog-api-key,anthropic-version");
     if (request.method === "OPTIONS") {
       reply.code(204).send();
       return;
@@ -81,6 +68,9 @@ export function buildServer(context: ProxyContext): FastifyInstance {
   app.all("/v1beta/*", async (request, reply) => {
     await handleProxyRequest(request, reply, context, upstream);
   });
+  app.all("/models", async (request, reply) => {
+    await handleProxyRequest(request, reply, context, upstream);
+  });
   app.all("/models/*", async (request, reply) => {
     await handleProxyRequest(request, reply, context, upstream);
   });
@@ -100,7 +90,7 @@ export function buildServer(context: ProxyContext): FastifyInstance {
 async function handleProxyRequest(
   request: FastifyRequest,
   reply: FastifyReply,
-  context: ProxyContext,
+  context: CoyoteAppContext,
   upstream: UpstreamClient
 ): Promise<void> {
   const requestId = shortId();
@@ -204,7 +194,7 @@ async function handleProxyRequest(
 async function relaySse(
   upstreamResponse: Response,
   reply: FastifyReply,
-  context: ProxyContext,
+  context: CoyoteAppContext,
   requestId: string,
   model: string | undefined,
   startedAt: number,
@@ -452,7 +442,7 @@ interface ResponseMetadata {
   errorMessage?: string;
 }
 
-function emitFinalResponseEvents(context: ProxyContext, input: FinalResponseInput): void {
+function emitFinalResponseEvents(context: CoyoteAppContext, input: FinalResponseInput): void {
   const metadata = inspectResponseMetadata(input.bodyText);
   if (metadata.toolCallCount > 0) {
     context.bus.emit({
@@ -668,13 +658,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isAllowedBrowserOrigin(origin: string): boolean {
+  if (origin === "null") {
+    return true;
+  }
+
   try {
     const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return true;
+    }
     const hostname = url.hostname.toLowerCase();
     return hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname) || hostname.endsWith(".localhost");
   } catch {
     return false;
   }
+}
+
+function requestedCorsHeaders(request: FastifyRequest): string | undefined {
+  const headers = request.headers["access-control-request-headers"];
+  return Array.isArray(headers) ? headers.join(", ") : headers;
 }
 
 function sanitizeDiagnosticMessage(message: string): string {
@@ -691,6 +693,7 @@ function copyResponseHeaders(upstreamResponse: Response, reply: FastifyReply): v
       lower === "connection" ||
       lower === "content-encoding" ||
       lower === "content-length" ||
+      lower.startsWith("access-control-") ||
       lower === "keep-alive" ||
       lower === "proxy-authenticate" ||
       lower === "proxy-authorization" ||

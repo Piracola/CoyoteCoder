@@ -32,10 +32,13 @@ Main source location: `app/src/`
 Key components:
 - `proxy/server.ts` — Fastify server, handles `/v1/*` proxy routes and SSE relay
 - `proxy/upstream.ts` — OpenAI pass-through plus Anthropic/Gemini format translation
+- `app/runtime.ts` — Wires config, bus, policy, SafetyGate, DG-LAB, waveforms, and server
+- `api/ui/*.ts` — Web console API routes for state, settings, upstream providers, runtime actions, static UI, and waveforms
 - `events/bus.ts` — Stores request/response lifecycle events without raw prompt logging
 - `shock/policy.ts` — Converts normalized events into DG-LAB channel plans
 - `shock/safety.ts` — Enforces dry-run, arm state, channel limits, rate limits, panic
 - `dglab/controller.ts` — WebSocket client for DG-LAB Socket V2 server
+- `dglab/waves.ts` — Built-in and file-loaded DG-LAB V3 waveform catalog
 - `config/schema.ts` — Zod schema for YAML config validation
 
 Generated/runtime directories to avoid editing: `.runtime/`, `.test-logs/`, `dist/`, `app/dist/`, `node_modules/`, `app/src-ui/dist/`, `app/src-tauri/target/`
@@ -59,7 +62,9 @@ Do not store raw prompt or response content unless an explicit debug setting is 
 
 Default config path: `app/config.yaml` relative to running process. Override with `COYOTE_CONFIG` environment variable.
 
-Environment overrides: `HOST`, `PORT`, `DGLAB_ENABLED`, `DGLAB_SOCKET_URL`, `DGLAB_QR_HOST`, `DGLAB_QR_PORT`
+Environment overrides: `HOST`, `PORT`, `DGLAB_ENABLED`, `DGLAB_SOCKET_URL`, `DGLAB_QR_HOST`, `DGLAB_QR_PORT`, `COYOTE_WAVEFORMS_DIR`
+
+User-imported waveform files live in `waveforms/` and are ignored by git except the tracked README/example files.
 
 ## Testing
 
@@ -68,7 +73,7 @@ Tests use Vitest. Run single test file:
 npx vitest run src/shock/safety.test.ts
 ```
 
-Test coverage focuses on SSE parser, SafetyGate, DG-LAB protocol helper, controller mock WebSocket, and proxy integration.
+Test coverage focuses on SSE parser, SafetyGate, DG-LAB protocol helper, controller mock WebSocket, waveform loading, shock engine coalescing, and proxy integration.
 
 ## Upstream Protocols
 

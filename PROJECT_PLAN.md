@@ -1,6 +1,6 @@
 # CoyoteCoder Project Plan
 
-状态日期：2026-04-29
+状态日期：2026-04-30
 
 ## 1. 项目目标
 
@@ -32,6 +32,11 @@ CoyoteCoder 是一个本地事件驱动兼容层，用 OpenAI-compatible API 连
 - DG-LAB Socket V2 protocol helper、controller、sink 和 `/dglab/*` 状态接口已存在。
 - DG-LAB 配对能力默认启用，二维码 host 默认 `auto`，用于开箱生成可扫码的局域网配对链接；真实输出仍默认 dry-run / unarmed。
 - Shock Engine 已记录 shock plan 历史，可通过 `/shock/recent` 和控制台历史区观察 Safety 后的发送 / 拦截 / 错误结果。
+- Web 控制台已迁移到 React/Vite 结构，并拆分为总览、运行配对、供应商、反馈规则、安全设置和日志视图。
+- UI 后端路由已拆分到 `app/src/api/ui/`，运行时组装已集中到 `app/src/app/runtime.ts`。
+- 已支持 `waveforms/` 自定义 DG-LAB V3 波形目录，反馈规则可为不同事件选择 `waveform_id`。
+- 流式输出默认使用连续波形计划，并在 Shock Engine / DglabSink 两侧做刷新节流。
+- 代理层已兼容裸 `/models` 请求、桌面客户端 origin 与自定义预检请求头。
 - 已通过 `npm run typecheck`、`npm test`、`npm run build`、`npm run smoke`、`GET /health`、`GET /dglab/status` 验证。
 - 已启动官方 Socket V2 backend 做本地联调，`GET /dglab/qr` 可获取 clientId 和二维码链接。
 - 已用模拟 APP WebSocket 完成 bind 握手测试，CoyoteCoder 可进入 bound 状态；真实 APP 扫码尚待人工验证。
@@ -99,10 +104,10 @@ DG-LAB-OPENSOURCE/socket/DG_WAVES_V2_V3_simple.js
 
 下一步任务：
 
-1. 将 chunk 速度、chunk 长度、响应阶段映射为配置化参数。
-2. 区分 request / response started / streaming / done 的节奏。
-3. 添加策略测试，覆盖低速、高速、长 chunk、短 chunk。
-4. 增加 shock plan 历史查询，便于观察调参效果。（已完成基础查询和 UI 展示）
+1. 继续用真实请求调 chunk 速度、chunk 长度和响应阶段的默认参数。
+2. 观察连续波形在真实 APP 上的体感，必要时调整默认波形和持续时间。
+3. 补更多策略测试，覆盖低速、高速、长 chunk、短 chunk。
+4. 继续完善 shock plan 历史展示，便于观察调参效果。（已完成基础查询和 UI 展示）
 
 验收：
 
@@ -131,8 +136,8 @@ DG-LAB-OPENSOURCE/socket/DG_WAVES_V2_V3_simple.js
 
 短期优先级：
 
-1. 用真实 agent 客户端做 dry-run 代理验证，并更新 client setup 文档。
-2. 用真实 DG-LAB APP 扫码验证 `/dglab/qr`、APP 绑定和 `/dglab/status`。
+1. 用真实 agent / 桌面客户端做 dry-run 代理验证，并更新 client setup 文档。
+2. 用真实 DG-LAB APP 扫码验证 `/dglab/qr`、APP 绑定、`/dglab/status` 和自定义波形。
 3. 用 shock plan 历史记录继续调策略参数，补覆盖低速 / 高速 / 长短 chunk 的策略测试。
 4. 在真实设备前，按 `docs/safety.md` 操作流程逐步验证。
 5. 根据真实客户端和 APP 联调结果修正兼容性差异。

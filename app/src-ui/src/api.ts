@@ -5,6 +5,7 @@ export interface PulsePolicy {
   channel: Channel;
   coefficient: number;
   durationMs: number;
+  waveformId?: string | null;
 }
 
 export interface ChunkPolicy {
@@ -12,6 +13,27 @@ export interface ChunkPolicy {
   coefficient: number;
   microIntensity: number;
   durationMs: number;
+  waveformId?: string | null;
+}
+
+export interface WaveformSummary {
+  id: string;
+  name: string;
+  source: "builtin" | "file";
+  fileName?: string;
+  sampleCount: number;
+  durationMs: number;
+}
+
+export interface WaveformState {
+  directory: string;
+  directories: string[];
+  items: WaveformSummary[];
+  errors: Array<{
+    fileName?: string;
+    directory?: string;
+    message: string;
+  }>;
 }
 
 export interface UiState {
@@ -54,6 +76,7 @@ export interface UiState {
     lastError?: string;
     strengths?: Record<Channel, number>;
   };
+  waveforms: WaveformState;
   testShock?: {
     outcome: "sent" | "blocked" | "error";
     dryRun: boolean;
@@ -75,6 +98,15 @@ export interface RuntimeEvent {
   stream?: boolean;
   statusCode?: number;
   durationMs?: number;
+  deltaMs?: number;
+  cumulativeChars?: number;
+  streamRateCharsPerSec?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  estimatedTokens?: boolean;
+  finishReason?: string;
+  toolCallCount?: number;
+  toolNames?: string[];
 }
 
 export interface ShockPlanRecord {
@@ -82,6 +114,9 @@ export interface ShockPlanRecord {
   eventType: string;
   outcome: "sent" | "blocked" | "dry_run" | "error" | string;
   error?: string;
+  safety?: {
+    dryRun?: boolean;
+  };
   input?: ShockPlan;
   output?: ShockPlan;
 }
@@ -91,6 +126,8 @@ export interface ShockPlan {
   intensity?: number;
   durationMs?: number;
   kind?: string;
+  waveId?: string;
+  continuous?: boolean;
 }
 
 export interface ProviderSummary {

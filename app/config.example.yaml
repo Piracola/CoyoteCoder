@@ -36,28 +36,34 @@ policy:
     channel: "A"
     coefficient: 1.0
     duration_ms: 120
+    # waveform_id: "custom-wave-id"
   response_started:
     channel: "B"
     coefficient: 1.0
     duration_ms: 120
+    # waveform_id: "custom-wave-id"
   response_chunk:
     channel: "B"
     coefficient: 1.0
     micro_intensity: 0.1
-    duration_ms: 120
+    duration_ms: 2000
+    # waveform_id: "custom-wave-id"
   response_tool_call:
     channel: "A"
     coefficient: 1.0
     duration_ms: 160
+    # waveform_id: "custom-wave-id"
   response_error_status:
     channel: "A"
     coefficient: 1.0
     duration_ms: 220
+    # waveform_id: "custom-wave-id"
   response_done:
     channel: "A"
     coefficient: 1.0
     duration_ms: 180
     token_target: 1200
+    # waveform_id: "custom-wave-id"
 
 dglab:
   enabled: true

@@ -53,7 +53,11 @@ Model discovery is exposed through the same downstream base URL:
 GET http://127.0.0.1:8787/v1/models
 ```
 
+CoyoteCoder also accepts clients that request `/models` without the `/v1` prefix and forwards query parameters such as pagination cursors.
+
 CoyoteCoder forwards OpenAI-compatible providers directly. For Anthropic and Gemini providers, it queries the provider's model list endpoint and returns an OpenAI-compatible `object: "list"` response for downstream clients.
+
+If the downstream client sends an API key in `Authorization`, `x-api-key`, `x-goog-api-key`, or `api-key`, CoyoteCoder forwards that key upstream. If the client does not send one, the saved provider key in `config.yaml` is used.
 
 ## Expected Behavior
 
@@ -81,4 +85,5 @@ Invoke-RestMethod http://127.0.0.1:8787/events/recent
 | Codex | Pending real-client verification | Set OpenAI-compatible base URL to `http://127.0.0.1:8787/v1`. |
 | Claude Code | Pending real-client verification | Use OpenAI-compatible provider settings if available. |
 | OpenCode | Pending real-client verification | Use OpenAI-compatible provider settings if available. |
+| Desktop OpenAI-compatible clients | Expected compatible | Supports browser preflight and desktop-style origins such as `app://...`. |
 | LiteLLM downstream clients | Expected compatible | Point client to CoyoteCoder, then point CoyoteCoder upstream to LiteLLM if needed. |

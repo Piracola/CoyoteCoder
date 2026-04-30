@@ -32,6 +32,9 @@ The selected upstream provider can be OpenAI-compatible, Anthropic Messages, or 
 | Shock policy | `app/src/shock/policy.ts` | Converts normalized events into channel plans. |
 | Safety gate | `app/src/shock/safety.ts` | Enforces dry-run, arm state, channel limits, rate limits, and panic. |
 | DG-LAB controller | `app/src/dglab/` | Talks to the official Socket V2 server when enabled. |
+| Waveform registry | `app/src/dglab/waves.ts` | Loads built-in and file-based DG-LAB V3 waveforms. |
+| App runtime | `app/src/app/` | Wires config, event bus, policy, safety, DG-LAB, waveforms, and Fastify. |
+| UI API routes | `app/src/api/ui/` | Serves console state, settings, provider, runtime, waveform, and static UI routes. |
 | Web console | `app/src-ui/` | Browser UI for provider settings, pairing, dry-run, arm/disarm, panic, and history. |
 
 ## Public Routes
@@ -41,6 +44,13 @@ The selected upstream provider can be OpenAI-compatible, Anthropic Messages, or 
 | `GET /health` | Basic service health. |
 | `GET /status` | Current upstream and safety state. |
 | `GET /ui` | Local Web console. |
+| `GET /ui/state` | Web console state snapshot. |
+| `POST /ui/settings` | Save dry-run, Safety, policy, and waveform settings. |
+| `POST /ui/upstream` | Save, select, or delete upstream providers. |
+| `GET /ui/waveforms` | List available built-in and file waveforms. |
+| `POST /ui/waveforms/refresh` | Reload waveform files. |
+| `POST /ui/test-shock` | Send a Safety-gated test plan. |
+| `GET /ui/qr.svg` | Render the current DG-LAB pairing QR code. |
 | `GET /events/recent` | Recent normalized lifecycle events. |
 | `GET /shock/recent` | Shock plan history and Safety outcomes. |
 | `POST /control/arm` | Enable armed state. |
@@ -52,6 +62,11 @@ The selected upstream provider can be OpenAI-compatible, Anthropic Messages, or 
 | `POST /dglab/disconnect` | Disconnect from Socket V2 server. |
 | `GET /dglab/qr` | Generate pairing QR data. |
 | `/v1/*` | OpenAI-compatible downstream proxy surface. |
+| `/models` and `/models/:model` | Compatibility aliases for clients that omit `/v1`. |
+
+## Waveforms
+
+Built-in waveforms are always available. Additional DG-LAB V3 waveforms are loaded from `waveforms/` beside the repo or runtime directory, or from `COYOTE_WAVEFORMS_DIR` when set. The tracked files in `waveforms/` are only the README and example; user-imported waveforms stay local.
 
 ## Safety Boundary
 
@@ -64,3 +79,5 @@ Real DG-LAB output is only possible when all of these are true:
 5. The plan passes `SafetyGate` limits.
 
 `POST /control/panic` must stay outside normal tuning flows and remain available as the fastest stop path.
+
+Custom waveforms do not bypass this boundary: policy selects a `waveform_id`, then `SafetyGate` still clamps or blocks the resulting plan before `DglabSink` can send it.

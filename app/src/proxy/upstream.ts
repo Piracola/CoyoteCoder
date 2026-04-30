@@ -107,39 +107,44 @@ export class UpstreamClient {
   constructor(private readonly config: UpstreamConfig) {}
 
   async request(input: UpstreamRequest): Promise<Response> {
+    const compatInput = { ...input, path: openAiCompatiblePath(input.path) };
+
     if (this.config.protocol === "openai") {
-      return this.passThrough(input);
+      if (compatInput.method.toUpperCase() === "GET" && (compatInput.path === "/v1/models" || detectModelRetrieve(compatInput.path))) {
+        return this.passThroughOpenAiModelRequest(compatInput);
+      }
+      return this.passThrough(compatInput);
     }
 
-    if (input.method.toUpperCase() === "GET" && input.path === "/v1/models") {
-      return this.listModels(input);
+    if (compatInput.method.toUpperCase() === "GET" && compatInput.path === "/v1/models") {
+      return this.listModels(compatInput);
     }
 
-    const modelId = detectModelRetrieve(input.path);
-    if (input.method.toUpperCase() === "GET" && modelId) {
-      return this.retrieveModel(input, modelId);
+    const modelId = detectModelRetrieve(compatInput.path);
+    if (compatInput.method.toUpperCase() === "GET" && modelId) {
+      return this.retrieveModel(compatInput, modelId);
     }
 
-    const endpoint = detectChatEndpoint(input.path);
-    if (endpoint && input.method.toUpperCase() === "POST") {
+    const endpoint = detectChatEndpoint(compatInput.path);
+    if (endpoint && compatInput.method.toUpperCase() === "POST") {
       const body = parseRequestBody(input.body);
       const chatBody = endpoint === "responses" ? responsesToChatBody(body) : body;
 
       if (this.config.protocol === "anthropic") {
-        return this.requestAnthropic(input, chatBody, endpoint);
+        return this.requestAnthropic(compatInput, chatBody, endpoint);
       }
-      return this.requestGemini(input, chatBody, endpoint);
+      return this.requestGemini(compatInput, chatBody, endpoint);
     }
 
-    if (input.path === "/v1/completions" && input.method.toUpperCase() === "POST") {
-      return this.requestCompletion(input, parseCompletionBody(input.body));
+    if (compatInput.path === "/v1/completions" && compatInput.method.toUpperCase() === "POST") {
+      return this.requestCompletion(compatInput, parseCompletionBody(input.body));
     }
 
-    if (input.path === "/v1/embeddings" && input.method.toUpperCase() === "POST") {
+    if (compatInput.path === "/v1/embeddings" && compatInput.method.toUpperCase() === "POST") {
       if (this.config.protocol === "gemini") {
-        return this.requestGeminiEmbeddings(input, parseEmbeddingBody(input.body));
+        return this.requestGeminiEmbeddings(compatInput, parseEmbeddingBody(input.body));
       }
-      return unsupportedResponse("anthropic", input.path);
+      return unsupportedResponse("anthropic", compatInput.path);
     }
 
     return this.passThroughNative(input);
@@ -149,12 +154,36 @@ export class UpstreamClient {
     const url = new URL(input.path + input.query, normalizedBaseUrl(this.config.base_url));
     const headers = copyClientHeaders(input.headers);
 
-    const apiKey = resolveApiKey(this.config);
+    const apiKey = resolveApiKey(this.config, input.headers);
     if (apiKey) {
       headers.set("authorization", `Bearer ${apiKey}`);
     }
 
     return fetchWithTimeout(url, input, headers, this.config.timeout_ms);
+  }
+
+  private async passThroughOpenAiModelRequest(input: UpstreamRequest): Promise<Response> {
+    const upstream = await this.passThrough(input);
+    if (!upstream.ok || !isJsonResponse(upstream)) {
+      return upstream;
+    }
+
+    const payload = safeJson(await upstream.clone().text());
+    if (!isRecord(payload)) {
+      return upstream;
+    }
+
+    if (input.path === "/v1/models" && Array.isArray(payload.data)) {
+      return jsonResponse(toOpenAiModelsResponse(payload.data));
+    }
+
+    if (detectModelRetrieve(input.path) && typeof payload.id === "string" && payload.object !== "model") {
+      const compatiblePayload = { object: "model", ...payload };
+      compatiblePayload.object = "model";
+      return jsonResponse(compatiblePayload);
+    }
+
+    return upstream;
   }
 
   private async passThroughNative(input: UpstreamRequest): Promise<Response> {
@@ -163,7 +192,7 @@ export class UpstreamClient {
     const headers = copyClientHeaders(input.headers);
     headers.delete("authorization");
 
-    const apiKey = resolveApiKey(this.config) ?? bearerToken(input.headers);
+    const apiKey = resolveApiKey(this.config, input.headers);
     if (this.config.protocol === "anthropic") {
       if (apiKey && !headers.has("x-api-key")) {
         headers.set("x-api-key", apiKey);
@@ -198,7 +227,7 @@ export class UpstreamClient {
       accept: "application/json",
       "anthropic-version": this.config.anthropic_version
     });
-    const apiKey = resolveApiKey(this.config);
+    const apiKey = resolveApiKey(this.config, input.headers);
     if (apiKey) {
       headers.set("x-api-key", apiKey);
     }
@@ -216,7 +245,7 @@ export class UpstreamClient {
       accept: "application/json",
       "anthropic-version": this.config.anthropic_version
     });
-    const apiKey = resolveApiKey(this.config) ?? bearerToken(input.headers);
+    const apiKey = resolveApiKey(this.config, input.headers);
     if (apiKey) {
       headers.set("x-api-key", apiKey);
     }
@@ -232,7 +261,7 @@ export class UpstreamClient {
   private async listGeminiModels(input: UpstreamRequest): Promise<Response> {
     const url = new URL("models" + input.query, normalizedBaseUrl(this.config.base_url));
     const headers = new Headers({ accept: "application/json" });
-    const apiKey = resolveApiKey(this.config);
+    const apiKey = resolveApiKey(this.config, input.headers);
     if (apiKey) {
       headers.set("x-goog-api-key", apiKey);
     }
@@ -247,7 +276,7 @@ export class UpstreamClient {
   private async retrieveGeminiModel(input: UpstreamRequest, modelId: string): Promise<Response> {
     const url = new URL(geminiModelPath(modelId), normalizedBaseUrl(this.config.base_url));
     const headers = new Headers({ accept: "application/json" });
-    const apiKey = resolveApiKey(this.config) ?? bearerToken(input.headers);
+    const apiKey = resolveApiKey(this.config, input.headers);
     if (apiKey) {
       headers.set("x-goog-api-key", apiKey);
     }
@@ -262,7 +291,7 @@ export class UpstreamClient {
 
   private async requestAnthropic(input: UpstreamRequest, body: ChatRequest, endpoint: TextEndpoint): Promise<Response> {
     const url = new URL("v1/messages", normalizedBaseUrl(this.config.base_url));
-    const apiKey = resolveApiKey(this.config);
+    const apiKey = resolveApiKey(this.config, input.headers);
     const headers = new Headers({
       "content-type": "application/json",
       accept: body.stream ? "text/event-stream" : "application/json",
@@ -297,7 +326,7 @@ export class UpstreamClient {
       url.searchParams.set("alt", "sse");
     }
 
-    const apiKey = resolveApiKey(this.config);
+    const apiKey = resolveApiKey(this.config, input.headers);
     const headers = new Headers({
       "content-type": "application/json",
       accept: body.stream ? "text/event-stream" : "application/json"
@@ -335,7 +364,7 @@ export class UpstreamClient {
   private async requestGeminiEmbeddings(input: UpstreamRequest, body: EmbeddingRequest): Promise<Response> {
     const model = body.model ?? "text-embedding-004";
     const inputs = normalizeEmbeddingInputs(body.input);
-    const apiKey = resolveApiKey(this.config) ?? bearerToken(input.headers);
+    const apiKey = resolveApiKey(this.config, input.headers);
     const headers = new Headers({
       "content-type": "application/json",
       accept: "application/json"
@@ -396,6 +425,14 @@ function detectChatEndpoint(path: string): ChatEndpoint | undefined {
 function detectModelRetrieve(path: string): string | undefined {
   const match = path.match(/^\/v1\/models\/([^/?]+)$/);
   return match ? decodeURIComponent(match[1]) : undefined;
+}
+
+function openAiCompatiblePath(path: string): string {
+  if (path === "/models") {
+    return "/v1/models";
+  }
+  const match = path.match(/^\/models\/([^/?]+)$/);
+  return match ? `/v1/models/${match[1]}` : path;
 }
 
 function copyClientHeaders(source: Record<string, string | string[] | undefined>): Headers {
@@ -1174,6 +1211,10 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
+function isJsonResponse(response: Response): boolean {
+  return (response.headers.get("content-type") ?? "").toLowerCase().includes("application/json");
+}
+
 function unsupportedResponse(protocol: string, path: string): Response {
   return new Response(
     JSON.stringify({
@@ -1189,15 +1230,30 @@ function unsupportedResponse(protocol: string, path: string): Response {
   );
 }
 
-function resolveApiKey(config: UpstreamConfig): string | undefined {
-  return config.api_key;
+function resolveApiKey(config: UpstreamConfig, headers: Record<string, string | string[] | undefined>): string | undefined {
+  return clientApiKey(headers) ?? config.api_key;
 }
 
 function bearerToken(headers: Record<string, string | string[] | undefined>): string | undefined {
   const value = headers.authorization ?? headers.Authorization;
   const authorization = Array.isArray(value) ? value[0] : value;
   const match = authorization?.match(/^Bearer\s+(.+)$/i);
-  return match?.[1];
+  return cleanApiKey(match?.[1]);
+}
+
+function clientApiKey(headers: Record<string, string | string[] | undefined>): string | undefined {
+  return bearerToken(headers) ?? firstHeaderValue(headers, "x-api-key") ?? firstHeaderValue(headers, "x-goog-api-key") ?? firstHeaderValue(headers, "api-key");
+}
+
+function firstHeaderValue(headers: Record<string, string | string[] | undefined>, name: string): string | undefined {
+  const match = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
+  const value = match?.[1];
+  return cleanApiKey(Array.isArray(value) ? value[0] : value);
+}
+
+function cleanApiKey(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function geminiNativePath(path: string): string {

@@ -88,6 +88,33 @@ describe("proxy server", () => {
     expect(proxy.bus.getRecent()).toEqual([]);
   });
 
+  it("accepts bare model list requests and preserves upstream parameters", async () => {
+    const upstreamModel = { id: "mock-model", object: "model", created: 1, owned_by: "mock" };
+    const upstream = await createMockUpstream((req, res) => {
+      expect(req.method).toBe("GET");
+      expect(req.url).toBe("/v1/models?limit=2&after=cursor");
+      expect(req.headers.authorization).toBe("Bearer downstream-key");
+      expect(req.headers["openai-organization"]).toBe("org_123");
+      res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
+      res.end(JSON.stringify({ object: "list", data: [upstreamModel], success: true }));
+    });
+    const proxy = await createProxy(upstream);
+
+    const response = await fetch(`${proxy.baseUrl}/models?limit=2&after=cursor`, {
+      headers: {
+        authorization: "Bearer downstream-key",
+        "openai-organization": "org_123",
+        origin: "app://cherry-studio"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe("app://cherry-studio");
+    expect(response.headers.get("access-control-allow-credentials")).toBe("true");
+    expect(await response.json()).toEqual({ object: "list", data: [upstreamModel] });
+    expect(proxy.bus.getRecent()).toEqual([]);
+  });
+
   it("rejects browser requests from non-local origins", async () => {
     const upstream = await createMockUpstream((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
@@ -101,10 +128,32 @@ describe("proxy server", () => {
     const allowed = await fetch(`${proxy.baseUrl}/health`, {
       headers: { origin: "http://127.0.0.1:1420" }
     });
+    const preflight = await fetch(`${proxy.baseUrl}/models`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://localhost:1420",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "authorization,openai-organization,x-stainless-os"
+      }
+    });
+    const desktopPreflight = await fetch(`${proxy.baseUrl}/v1/models`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "app://cherry-studio",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "authorization,content-type"
+      }
+    });
 
     expect(blocked.status).toBe(403);
     expect(allowed.status).toBe(200);
     expect(allowed.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:1420");
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("http://localhost:1420");
+    expect(preflight.headers.get("access-control-allow-headers")).toBe("authorization,openai-organization,x-stainless-os");
+    expect(desktopPreflight.status).toBe(204);
+    expect(desktopPreflight.headers.get("access-control-allow-origin")).toBe("app://cherry-studio");
+    expect(desktopPreflight.headers.get("access-control-allow-headers")).toBe("authorization,content-type");
   });
 
   it("passes through file and upload routes as upstream traffic", async () => {
@@ -141,7 +190,22 @@ describe("proxy server", () => {
     });
   });
 
-  it("uses configured OpenAI API keys instead of downstream placeholder keys", async () => {
+  it("uses downstream OpenAI API keys before configured keys", async () => {
+    const upstream = await createMockUpstream((req, res) => {
+      expect(req.headers.authorization).toBe("Bearer downstream-key");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ object: "list", data: [] }));
+    });
+    const proxy = await createProxy(upstream, { api_key: "configured-key" });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/models`, {
+      headers: { authorization: "Bearer downstream-key" }
+    });
+
+    expect(await response.json()).toEqual({ object: "list", data: [] });
+  });
+
+  it("uses configured OpenAI API keys when downstream requests do not provide one", async () => {
     const upstream = await createMockUpstream((req, res) => {
       expect(req.headers.authorization).toBe("Bearer configured-key");
       res.writeHead(200, { "content-type": "application/json" });
@@ -149,9 +213,7 @@ describe("proxy server", () => {
     });
     const proxy = await createProxy(upstream, { api_key: "configured-key" });
 
-    const response = await fetch(`${proxy.baseUrl}/v1/models`, {
-      headers: { authorization: "Bearer cherry-placeholder" }
-    });
+    const response = await fetch(`${proxy.baseUrl}/v1/models`);
 
     expect(await response.json()).toEqual({ object: "list", data: [] });
   });
@@ -446,7 +508,8 @@ describe("proxy server", () => {
       {
         eventType: "dglab.test",
         outcome: "error",
-        error: "dglab_disabled"
+        error: "dglab_disabled",
+        input: { intensity: 0.1 }
       }
     ]);
   });
@@ -546,7 +609,7 @@ describe("proxy server", () => {
   it("passes through Anthropic native endpoints with Anthropic headers", async () => {
     const upstream = await createMockUpstream((req, res) => {
       expect(req.url).toBe("/v1/files?limit=1");
-      expect(req.headers["x-api-key"]).toBe("anthropic-test");
+      expect(req.headers["x-api-key"]).toBe("downstream-key");
       expect(req.headers["anthropic-version"]).toBe("2023-06-01");
       expect(req.headers.authorization).toBeUndefined();
       res.writeHead(200, { "content-type": "application/json" });
@@ -567,7 +630,7 @@ describe("proxy server", () => {
   it("passes through Gemini native endpoints by stripping OpenAI v1 prefixes", async () => {
     const upstream = await createMockUpstream((req, res) => {
       expect(req.url).toBe("/v1beta/files?pageSize=1");
-      expect(req.headers["x-goog-api-key"]).toBe("gemini-test");
+      expect(req.headers["x-goog-api-key"]).toBe("downstream-key");
       expect(req.headers.authorization).toBeUndefined();
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ files: [] }));

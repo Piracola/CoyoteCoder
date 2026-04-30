@@ -194,12 +194,15 @@ try {
 
   New-Item -ItemType Directory -Force -Path $PortableDir | Out-Null
   New-Item -ItemType Directory -Force -Path (Join-Path $PortableDir "src-ui") | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $PortableDir "waveforms") | Out-Null
 
   Copy-Item ".\src-tauri\target\release\coyote-coder.exe" (Join-Path $PortableDir "CoyoteCoder.exe") -Force
   Copy-Item $BackendExePath (Join-Path $PortableDir "coyote-backend.exe") -Force
   Copy-Item ".\config.example.yaml" (Join-Path $PortableDir "config.example.yaml") -Force
   Copy-Item "..\README.md" (Join-Path $PortableDir "README.md") -Force
   Copy-Item "..\CoyoteCoder.png" (Join-Path $PortableDir "CoyoteCoder.png") -Force
+  Copy-Item "..\waveforms\README.md" (Join-Path $PortableDir "waveforms\README.md") -Force
+  Copy-Item "..\waveforms\example.json" (Join-Path $PortableDir "waveforms\example.json") -Force
   Copy-Item ".\src-ui\dist" (Join-Path $PortableDir "src-ui\dist") -Recurse -Force
 
   Compress-Archive -Path (Join-Path $PortableDir "*") -DestinationPath $zipPath -Force
