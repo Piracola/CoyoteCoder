@@ -9,9 +9,9 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)
 
-CoyoteCoder 是一个为 Vibe Coding 场景适配的郊狼插件。
+CoyoteCoder 是一个本地代理，把 AI 客户端的模型响应节奏转换成 DG-LAB 郊狼反馈事件。
 
-它位于你的 AI 客户端与上游大模型服务之间，负责监听模型响应，并将相应的反馈指令发送至郊狼。
+使用时需把 Codex、Claude Code 之类客户端的 Base URL 改成 <Http://127.0.0.1:8787/v1> ，它先接住请求，再转发给真正的上游模型服务，同时监听“请求开始、响应开始、流式输出、工具调用、完成、报错”等事件。
 
 让 Vibe Coding 更有参与感。
 
@@ -25,9 +25,6 @@ CoyoteCoder 是一个为 Vibe Coding 场景适配的郊狼插件。
 - **自定义波形**：可把 DG-LAB V3 波形文件放入 `waveforms/`，在控制台里为不同事件选择波形。
 - **隐私优先**：默认不保存原始请求内容，仅记录统计信息，减少提示词与 API Key 暴露风险。
 - **安全机制**：首次启动默认进入“预览模式”（仅记录计划，不输出到物理设备），内置紧急停止（Panic）接口。
-
-本项目并不需要模型主动决定是否发送电击指令，而是根据上游响应发送电击指令，体感上类似“模型一写说话就电击使用者”。
-
 
 ## 🚀 快速开始
 
@@ -72,7 +69,6 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/control/panic
 - [架构说明](./docs/architecture.md)
 - [DG-LAB 协议备注](./docs/protocol-notes.md)
 - [变更记录](./docs/change-record.md)
-
 
 ## ❤️ 致谢
 
