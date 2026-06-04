@@ -2,7 +2,7 @@
 
 ## 环境依赖
 
-- Node.js 和 npm
+- Node.js 24+ 和 npm
 - Rust stable 工具链
 - Visual Studio Build Tools，需安装 C++ 桌面构建工具
 - 如需由脚本托管 DG-LAB Socket V2 后端，需要本地存在 `DG-LAB-OPENSOURCE/socket/v2/backend`
@@ -60,7 +60,7 @@ npm run dev
 1. `npm run typecheck` 检查 TypeScript 类型。
 2. `npm test` 跑测试。
 3. `npm run build` 构建 Web 控制台和后端 JS。
-4. 使用 `@yao-pkg/pkg` 将后端打成 `dist/coyote-backend.exe`。
+4. 使用 `@yao-pkg/pkg` 基于 Node 24 runtime 将后端打成 `dist/coyote-backend.exe`。
 5. `npm run tauri:build` 构建桌面端 `coyote-coder.exe`。
 6. 复制 exe、配置、README、图标、UI dist 和 `waveforms/` 示例，压缩成便携版 zip。
 

@@ -31,7 +31,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: app/package-lock.json
 
@@ -92,7 +92,7 @@ jobs:
         run: |
           $outputRoot = Join-Path (Resolve-Path "..") "dist"
           New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
-          npx --yes @yao-pkg/pkg dist/src/index.js --targets node20-win-x64 --output (Join-Path $outputRoot "coyote-backend.exe")
+          npx --yes @yao-pkg/pkg dist/src/index.js --targets node24-win-x64 --output (Join-Path $outputRoot "coyote-backend.exe")
 
       - name: Build desktop exe
         run: npm run tauri:build

@@ -127,8 +127,8 @@ Push-Location $AppRoot
 try {
   New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 
-  Require-Command "node" "Install Node.js 20+."
-  Require-Command "npm" "Install Node.js 20+."
+  Require-Command "node" "Install Node.js 24+."
+  Require-Command "npm" "Install Node.js 24+."
   Require-Command "cargo" "Install Rust stable toolchain."
   Import-VsBuildToolsEnvironment
   Require-Command "link.exe" "Install Visual Studio Build Tools with the C++ desktop workload."
@@ -181,7 +181,7 @@ try {
   }
 
   Write-Step "Build backend sidecar"
-  Run "npx" @("--yes", "@yao-pkg/pkg", "dist/src/index.js", "--targets", "node20-win-x64", "--output", $BackendExePath)
+  Run "npx" @("--yes", "@yao-pkg/pkg", "dist/src/index.js", "--targets", "node24-win-x64", "--output", $BackendExePath)
 
   Write-Step "Build desktop app"
   Run "npm" @("run", "tauri:build")
