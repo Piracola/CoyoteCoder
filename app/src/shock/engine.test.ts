@@ -71,7 +71,15 @@ describe("ShockEngine", () => {
   });
 
   it("plans tool-call, error-status, and token-scaled done feedback", async () => {
-    const config = configSchema.parse({ safety: { channel_limits: { A: 100, B: 100 } } });
+    // Ramp and spacing are exercised separately; this case is about the policy
+    // mapping reaching the sink intact.
+    const config = configSchema.parse({
+      safety: {
+        channel_limits: { A: 100, B: 100 },
+        max_intensity_step: 1,
+        min_interval_ms: 0
+      }
+    });
     const bus = new EventBus(20);
     const sink = new CapturingSink();
     const store = new ShockPlanStore(20);
@@ -100,7 +108,8 @@ describe("ShockEngine", () => {
     });
 
     expect(sink.plans).toMatchObject([
-      { channel: "A", intensity: 1 / 3, durationMs: 160, reason: "response.tool_call" },
+      // SafetyGate quantizes intensity to 4 decimals to keep the ramp stable.
+      { channel: "A", intensity: 0.3333, durationMs: 160, reason: "response.tool_call" },
       { channel: "A", intensity: 0.65, durationMs: 220, reason: "response.error_status" },
       { channel: "A", intensity: 0.5, durationMs: 180, reason: "response.done" }
     ]);

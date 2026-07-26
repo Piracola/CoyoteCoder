@@ -26,6 +26,9 @@ export class ShockPolicy {
     }
     if (patch.responseDone) {
       updateFeedbackConfig(this.config.response_done, patch.responseDone);
+      if (patch.responseDone.tokenTarget !== undefined) {
+        this.config.response_done.token_target = Math.max(1, Math.round(patch.responseDone.tokenTarget));
+      }
     }
     if (patch.responseToolCall) {
       updateFeedbackConfig(this.config.response_tool_call, patch.responseToolCall);
@@ -41,7 +44,7 @@ export class ShockPolicy {
         this.config.response_chunk.coefficient = clampCoefficient(patch.responseChunk.coefficient);
       }
       if (patch.responseChunk.microIntensity !== undefined) {
-        this.config.response_chunk.micro_intensity = clampCoefficient(patch.responseChunk.microIntensity);
+        this.config.response_chunk.micro_intensity = clampIntensity(patch.responseChunk.microIntensity);
       }
       if (patch.responseChunk.durationMs !== undefined) {
         this.config.response_chunk.duration_ms = Math.max(1, Math.round(patch.responseChunk.durationMs));
@@ -146,6 +149,8 @@ interface PulseSettingsPatch {
   channel?: "A" | "B";
   coefficient?: number;
   durationMs?: number;
+  /** Only meaningful for responseDone: output tokens that map to full intensity. */
+  tokenTarget?: number;
   waveformId?: string | null;
 }
 
@@ -195,6 +200,12 @@ function updateFeedbackConfig(
   }
 }
 
+// Coefficients may amplify (up to 2x) as well as attenuate. SafetyGate still
+// clamps the product, so this only widens the expressive range.
 function clampCoefficient(value: number): number {
-  return Math.round(clamp(value, 0, 1) * 10) / 10;
+  return Math.round(clamp(value, 0, 2) * 100) / 100;
+}
+
+function clampIntensity(value: number): number {
+  return Math.round(clamp(value, 0, 1) * 100) / 100;
 }

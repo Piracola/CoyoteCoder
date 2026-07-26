@@ -114,6 +114,12 @@ jobs:
           Copy-Item "..\CoyoteCoder.png" (Join-Path $portableDir "CoyoteCoder.png") -Force
           Copy-Item ".\src-ui\dist" (Join-Path $portableDir "src-ui\dist") -Recurse -Force
 
+          # Ship the waveform examples so released zips match scripts/build-portable.ps1.
+          $waveformDir = Join-Path $portableDir "waveforms"
+          New-Item -ItemType Directory -Force -Path $waveformDir | Out-Null
+          Copy-Item "..\waveforms\README.md" (Join-Path $waveformDir "README.md") -Force
+          Copy-Item "..\waveforms\example.json" (Join-Path $waveformDir "example.json") -Force
+
           Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath (Join-Path $outputRoot $zipName) -Force
 
       - name: Upload portable zip

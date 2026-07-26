@@ -89,7 +89,12 @@ function readSafetyPatch(safety: Record<string, unknown>): SafetySettingsPatch {
         }
       : undefined,
     maxContinuousOutputMs: readNumber(safety, "maxContinuousOutputMs"),
-    maxEventsPerMinute: readNumber(safety, "maxEventsPerMinute")
+    maxEventsPerMinute: readNumber(safety, "maxEventsPerMinute"),
+    maxIntensityStep: readNumber(safety, "maxIntensityStep"),
+    minIntervalMs: readNumber(safety, "minIntervalMs"),
+    maxSessionMs: readNumber(safety, "maxSessionMs"),
+    idleDisarmMs: readNumber(safety, "idleDisarmMs"),
+    respectDeviceSoftLimit: readBoolean(safety, "respectDeviceSoftLimit")
   };
 }
 
@@ -113,6 +118,8 @@ function readPulsePatch(policy: Record<string, unknown>, key: string): PolicySet
     channel: readChannel(value, "channel"),
     coefficient: readNumber(value, "coefficient"),
     durationMs: readNumber(value, "durationMs"),
+    // Only response_done consumes this; the policy ignores it elsewhere.
+    tokenTarget: readNumber(value, "tokenTarget"),
     waveformId: readWaveformId(value, "waveformId")
   };
 }

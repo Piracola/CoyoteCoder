@@ -12,7 +12,12 @@ export class DglabSink implements ShockSink {
   ) {}
 
   async send(plan: ShockPlan, meta: { dryRun: boolean; armed: boolean }): Promise<void> {
-    if (meta.dryRun || !meta.armed) {
+    const isDeEscalation = plan.kind === "shock.zero" || plan.kind === "shock.clear";
+
+    // Zero and clear must still reach the device when disarmed: disarming does
+    // not by itself un-latch whatever strength the device is already holding.
+    // Dry-run is different — nothing was ever sent, so there is nothing to undo.
+    if (meta.dryRun || (!meta.armed && !isDeEscalation)) {
       console.log(JSON.stringify({ ...plan, mode: meta.dryRun ? "dry-run" : "blocked-unarmed", armed: meta.armed }));
       return;
     }

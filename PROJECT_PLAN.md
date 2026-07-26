@@ -1,6 +1,6 @@
 # CoyoteCoder Project Plan
 
-状态日期：2026-04-30
+状态日期：2026-07-26
 
 ## 1. 项目目标
 
@@ -41,6 +41,17 @@ CoyoteCoder 是一个本地事件驱动兼容层，用 OpenAI-compatible API 连
 - 已启动官方 Socket V2 backend 做本地联调，`GET /dglab/qr` 可获取 clientId 和二维码链接。
 - 已用模拟 APP WebSocket 完成 bind 握手测试，CoyoteCoder 可进入 bound 状态；真实 APP 扫码尚待人工验证。
 - git 仓库已初始化，远程为 `https://github.com/Piracola/CoyoteCoder`。
+
+2026-07-26 修复轮之后新增的基线（详见 `docs/change-record.md`）：
+
+- 退出、panic、断线、闲置、会话超时都会真正给设备归零，并等待帧离开 socket 后才关闭传输层。
+- SafetyGate 增加强度爬升、通道最小间隔、会话时长上限、闲置自动解除，并尊重 APP 上报的软上限。
+- `ShockEngine` 串行发送，停止类事件可作废排队计划；relay 的排队脉冲可被撤回。
+- `/v1/messages`（Claude Code 原生入口）与 Gemini 原生 `:generateContent` 已纳入事件端点。
+- Anthropic / Gemini 上游的流式 tool call、finish_reason 与 usage 已完整透传。
+- 流式强度改用真实生成文本字符数计算。
+- 控制台改为 SSE 实时推送，并新增波形预览/试放、通道强度表、配对网卡候选。
+- `verify` workflow 在每次 push 和 PR 上运行类型检查与测试。
 
 ## 3. 下一步方向
 

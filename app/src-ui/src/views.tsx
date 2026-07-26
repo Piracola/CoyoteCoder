@@ -20,6 +20,8 @@ import {
   Square,
   Trash2,
   Unplug,
+  Waves,
+  Wifi,
   Zap,
   Play
 } from "lucide-react";
@@ -40,7 +42,21 @@ import {
   type UpstreamProtocol,
   type WaveformState
 } from "./api";
-import { ActionButton, EmptyState, Field, IconButton, MetricCard, PageTitle, Panel, PanelTitle, StatusLine, StatusPill } from "./components";
+import {
+  ActionButton,
+  EmptyState,
+  Field,
+  IconButton,
+  InlineHint,
+  MeterBar,
+  MetricCard,
+  PageTitle,
+  Panel,
+  PanelTitle,
+  StatusLine,
+  StatusPill,
+  WaveformChart
+} from "./components";
 import {
   clampNumber,
   dglabLinkLabel,
@@ -364,10 +380,30 @@ export function RuntimeView({
                 <strong>{state.dglab.bound ? "APP 已绑定" : state.dglab.connected ? "等待扫码绑定" : "等待 Socket 连接"}</strong>
                 <span>{state.dglab.bound ? "预览与受控测试可用" : state.dglab.connected ? "生成配对码后用 DG-LAB APP 扫码" : "DG-LAB Socket V2 未连接"}</span>
               </div>
+              <LanCandidateHint state={state} />
             </div>
           </div>
         </Panel>
       </div>
+
+      <Panel>
+        <PanelTitle icon={<Gauge size={18} />} title="通道实时强度" />
+        <div className="channel-meters">
+          <ChannelMeter
+            channel="A"
+            value={state.dglab.strengths?.A ?? 0}
+            limit={state.safety.effectiveLimits?.A ?? state.safety.channelLimits.A}
+            deviceLimit={state.dglab.strengths?.softLimitA}
+          />
+          <ChannelMeter
+            channel="B"
+            value={state.dglab.strengths?.B ?? 0}
+            limit={state.safety.effectiveLimits?.B ?? state.safety.channelLimits.B}
+            deviceLimit={state.dglab.strengths?.softLimitB}
+          />
+        </div>
+        <SessionStatus state={state} />
+      </Panel>
 
       <Panel>
         <PanelTitle icon={<Activity size={18} />} title="状态明细" />
@@ -405,6 +441,109 @@ function RuntimeToggle({
       </span>
     </label>
   );
+}
+
+/**
+ * Multi-NIC machines (WSL, Docker, VPN) routinely produce a QR pointing at an
+ * address the phone cannot reach, so show what was picked and the alternatives.
+ */
+function LanCandidateHint({ state }: { state: UiState }) {
+  const candidates = state.lanCandidates ?? [];
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const chosenHost = state.dglab.qrLink ? extractHost(state.dglab.qrLink) : undefined;
+  const alternatives = candidates.filter((candidate) => candidate.address !== chosenHost);
+
+  return (
+    <div className="lan-hint">
+      <div className="lan-hint-head">
+        <Wifi size={14} />
+        <span>
+          配对地址 <code>{chosenHost ?? candidates[0]?.address ?? "自动"}</code>
+        </span>
+      </div>
+      {alternatives.length > 0 ? (
+        <details>
+          <summary>手机扫不上？换一个网卡地址</summary>
+          <ul>
+            {alternatives.map((candidate) => (
+              <li key={`${candidate.interfaceName}-${candidate.address}`}>
+                <code>{candidate.address}</code>
+                <small>
+                  {candidate.interfaceName}
+                  {candidate.likelyVirtual ? " · 虚拟网卡" : ""}
+                </small>
+              </li>
+            ))}
+          </ul>
+          <p>
+            在 <code>config.yaml</code> 中把 <code>dglab.qr_host</code> 改成上面某个地址后重启即可。
+          </p>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function extractHost(link: string): string | undefined {
+  // The QR payload embeds a ws:// URL inside a longer app-download link.
+  const match = /wss?:\/\/([^/:]+)/i.exec(link);
+  return match?.[1];
+}
+
+function ChannelMeter({
+  channel,
+  value,
+  limit,
+  deviceLimit
+}: {
+  channel: Channel;
+  value: number;
+  limit: number;
+  deviceLimit?: number;
+}) {
+  const capped = deviceLimit !== undefined && deviceLimit > 0 && deviceLimit < limit;
+  return (
+    <div className="channel-meter">
+      <header>
+        <strong>{channel} 通道</strong>
+        <em>{value}</em>
+      </header>
+      <MeterBar value={value} max={100} limit={limit} tone={value > 0 ? "ok" : "neutral"} />
+      <small>
+        生效上限 {limit}
+        {capped ? ` · 受 APP 软上限 ${deviceLimit} 限制` : ""}
+      </small>
+    </div>
+  );
+}
+
+function SessionStatus({ state }: { state: UiState }) {
+  if (!state.safety.armed) {
+    return <InlineHint>反馈未启动时不会有任何真实输出。</InlineHint>;
+  }
+
+  const parts: string[] = [];
+  if (state.safety.armedForMs !== undefined) {
+    parts.push(`已运行 ${formatDuration(state.safety.armedForMs)}`);
+  }
+  if (state.safety.sessionRemainingMs !== undefined) {
+    parts.push(`会话剩余 ${formatDuration(state.safety.sessionRemainingMs)}`);
+  }
+  if (state.safety.idleRemainingMs !== undefined) {
+    parts.push(`闲置 ${formatDuration(state.safety.idleRemainingMs)} 后自动停止`);
+  }
+
+  return <InlineHint tone="ok">{parts.join(" · ") || "反馈进行中"}</InlineHint>;
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}分${String(seconds).padStart(2, "0")}秒` : `${seconds}秒`;
 }
 
 export function ProviderView({
@@ -621,6 +760,50 @@ export function SafetyView({
             onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxEventsPerMinute: value } }))}
           />
         </div>
+        <InlineHint>通道上限还会与郊狼 APP 上报的软上限取更严格的一方。</InlineHint>
+        <SettingsFooter busy={busy} dirty={dirty} draft={draft} setDirty={setDirty} setDraft={setDraft} runAction={runAction} />
+      </Panel>
+
+      <Panel>
+        <PanelTitle icon={<Activity size={18} />} title="节奏与会话保护" />
+        <div className="safety-grid">
+          <SafetyControl
+            label="单次最大增幅"
+            value={Math.round(draft.safety.maxIntensityStep * 100)}
+            min={1}
+            max={100}
+            unit="%"
+            onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxIntensityStep: value / 100 } }))}
+          />
+          <SafetyControl
+            label="最小间隔"
+            value={draft.safety.minIntervalMs}
+            min={0}
+            max={10000}
+            step={10}
+            unit="ms"
+            onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, minIntervalMs: value } }))}
+          />
+          <SafetyControl
+            label="单次会话上限"
+            value={Math.round(draft.safety.maxSessionMs / 60000)}
+            min={0}
+            max={360}
+            unit="分钟"
+            onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, maxSessionMs: value * 60000 } }))}
+          />
+          <SafetyControl
+            label="闲置自动停止"
+            value={Math.round(draft.safety.idleDisarmMs / 60000)}
+            min={0}
+            max={60}
+            unit="分钟"
+            onChange={(value) => update((current) => ({ ...current, safety: { ...current.safety, idleDisarmMs: value * 60000 } }))}
+          />
+        </div>
+        <InlineHint>
+          增幅限制让强度逐级爬升，不会一步跳到上限；会话与闲置上限填 0 表示关闭。断开郊狼连接时也会自动停止反馈。
+        </InlineHint>
         <SettingsFooter busy={busy} dirty={dirty} draft={draft} setDirty={setDirty} setDraft={setDraft} runAction={runAction} />
       </Panel>
     </div>
@@ -723,7 +906,19 @@ export function FeedbackRulesView({
           <StatusLine label="内置波形" value={`${state.waveforms.items.filter((item) => item.source === "builtin").length}`} />
           <StatusLine label="读取错误" value={`${state.waveforms.errors.length}`} />
         </div>
+        {state.waveforms.errors.length > 0 ? (
+          <ul className="waveform-errors">
+            {state.waveforms.errors.map((error, index) => (
+              <li key={index}>
+                <strong>{error.fileName ?? error.directory ?? "波形目录"}</strong>
+                <span>{error.message}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </Panel>
+
+      <WaveformLibrary state={state} busy={busy} runAction={runAction} />
 
       <div className="policy-grid">
         <PulseEditor title="请求开始" value={draft.policy.requestStarted} waveforms={state.waveforms} onChange={(next) => updatePulse("requestStarted", next)} />
@@ -739,6 +934,57 @@ export function FeedbackRulesView({
         <SettingsFooter busy={busy} dirty={dirty} draft={draft} setDirty={setDirty} setDraft={setDraft} runAction={runAction} />
       </Panel>
     </div>
+  );
+}
+
+/**
+ * Lets the user see the shape of every available waveform and fire a single
+ * pulse with it, so choosing a waveform is not guesswork from its filename.
+ */
+function WaveformLibrary({ state, busy, runAction }: { state: UiState; busy: string | null; runAction: RunAction }) {
+  const canTest = state.dglab.enabled && state.dglab.connected && state.dglab.bound;
+
+  return (
+    <Panel>
+      <PanelTitle icon={<Waves size={18} />} title="波形预览" action={canTest ? undefined : "试放需要先完成 APP 配对"} />
+      {state.waveforms.items.length === 0 ? (
+        <EmptyState>暂无可用波形</EmptyState>
+      ) : (
+        <div className="waveform-library">
+          {state.waveforms.items.map((waveform) => (
+            <article className="waveform-card" key={waveform.id}>
+              <header>
+                <div>
+                  <strong>{waveform.name}</strong>
+                  <small>
+                    {waveform.source === "builtin" ? "内置" : waveform.fileName ?? "文件"} · {waveform.sampleCount} 样本 ·{" "}
+                    {(waveform.durationMs / 1000).toFixed(1)}s
+                  </small>
+                </div>
+                <ActionButton
+                  variant="ghost"
+                  busy={busy === `wave-test-${waveform.id}`}
+                  disabled={!canTest}
+                  icon={<Play size={15} />}
+                  onClick={() =>
+                    runAction(`wave-test-${waveform.id}`, `已用「${waveform.name}」试放`, () =>
+                      api<UiState>("/ui/test-shock", {
+                        method: "POST",
+                        body: JSON.stringify({ waveformId: waveform.id, intensity: 0.1, durationMs: 400 })
+                      })
+                    )
+                  }
+                >
+                  试放
+                </ActionButton>
+              </header>
+              <WaveformChart amplitude={waveform.preview?.amplitude ?? []} label={undefined} />
+            </article>
+          ))}
+        </div>
+      )}
+      <InlineHint tone="warn">试放同样会经过安全限制，强度固定为最低档。</InlineHint>
+    </Panel>
   );
 }
 
@@ -799,7 +1045,17 @@ function SettingsFooter({
   );
 }
 
-function PulseEditor({ title, value, waveforms, onChange }: { title: string; value: PulsePolicy; waveforms: WaveformState; onChange: (value: PulsePolicy) => void }) {
+function PulseEditor({
+  title,
+  value,
+  waveforms,
+  onChange
+}: {
+  title: string;
+  value: PulsePolicy;
+  waveforms: WaveformState;
+  onChange: (value: PulsePolicy) => void;
+}) {
   return (
     <Panel className="pulse-card">
       <PanelTitle icon={<Zap size={18} />} title={title} />
@@ -807,6 +1063,16 @@ function PulseEditor({ title, value, waveforms, onChange }: { title: string; val
         <ChannelSelect value={value.channel} onChange={(channel) => onChange({ ...value, channel })} />
         <CoefficientField value={value.coefficient} onChange={(coefficient) => onChange({ ...value, coefficient })} />
         <NumberField label="持续 ms" value={value.durationMs} min={1} max={30000} step={10} onChange={(durationMs) => onChange({ ...value, durationMs })} />
+        {value.tokenTarget !== undefined ? (
+          <NumberField
+            label="满强度 token"
+            value={value.tokenTarget}
+            min={1}
+            max={100000}
+            step={50}
+            onChange={(tokenTarget) => onChange({ ...value, tokenTarget })}
+          />
+        ) : null}
         <WaveformSelect value={value.waveformId ?? ""} waveforms={waveforms} onChange={(waveformId) => onChange({ ...value, waveformId })} />
       </div>
     </Panel>
@@ -876,15 +1142,26 @@ function NumberField({
   );
 }
 
+const MAX_COEFFICIENT = 2;
+
 function CoefficientField({ value, onChange }: { value: number; onChange: (value: number) => void }) {
-  const update = (next: number) => onChange(clampNumber(next, 0, 1));
-  const bubbleStyle = { "--value": `${value * 100}%` } as React.CSSProperties;
+  const update = (next: number) => onChange(clampNumber(next, 0, MAX_COEFFICIENT));
+  const bubbleStyle = { "--value": `${(value / MAX_COEFFICIENT) * 100}%` } as React.CSSProperties;
 
   return (
     <Field label="强度系数">
-      <div className="coefficient-control" style={bubbleStyle}>
-        <span className="coefficient-value">{value.toFixed(1).replace(/\.0$/, "")}</span>
-        <input className="coefficient-slider" type="range" min={0} max={1} step={0.1} value={value} aria-label="强度系数滑块" onChange={(event) => update(Number(event.target.value))} />
+      <div className={`coefficient-control ${value > 1 ? "boosted" : ""}`.trim()} style={bubbleStyle}>
+        <span className="coefficient-value">{value.toFixed(2).replace(/\.?0+$/, "")}</span>
+        <input
+          className="coefficient-slider"
+          type="range"
+          min={0}
+          max={MAX_COEFFICIENT}
+          step={0.05}
+          value={value}
+          aria-label="强度系数滑块"
+          onChange={(event) => update(Number(event.target.value))}
+        />
       </div>
     </Field>
   );

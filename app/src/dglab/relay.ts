@@ -16,7 +16,11 @@ interface RelayMessage {
 interface RelayClient {
   ws: WebSocketClient;
   lastSeen: number;
+  pulseTimers: Set<NodeJS.Timeout>;
 }
+
+/** Ceiling on a single pulse request's repeat count, in seconds. */
+const MAX_PULSE_SECONDS = 60;
 
 export class DglabRelayServer {
   private server?: WebSocketServer;
@@ -33,10 +37,10 @@ export class DglabRelayServer {
     }
 
     const { port } = parseSocketUrl(this.config.socket_url);
-    const server = new WebSocketServer({ port });
+    const server = new WebSocketServer({ port, host: this.config.relay_bind_host });
     this.server = server;
 
-    server.on("connection", (socket) => this.register(socket));
+    server.on("connection", (socket, request) => this.register(socket, request.socket.remoteAddress));
 
     await new Promise<void>((resolve, reject) => {
       const onListening = () => {
@@ -65,6 +69,7 @@ export class DglabRelayServer {
       this.heartbeatTimer = undefined;
     }
 
+    this.cancelAllPulses();
     for (const client of this.clients.values()) {
       client.ws.close();
     }
@@ -80,12 +85,50 @@ export class DglabRelayServer {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  private register(ws: WebSocketClient): void {
+  /**
+   * Cancels every queued pulse forward. Panic and shutdown depend on this:
+   * without it, already-scheduled forwards keep firing after the stop.
+   */
+  cancelAllPulses(): void {
+    for (const client of this.clients.values()) {
+      for (const timer of client.pulseTimers) {
+        clearTimeout(timer);
+      }
+      client.pulseTimers.clear();
+    }
+  }
+
+  private register(ws: WebSocketClient, remoteAddress: string | undefined): void {
+    if (!this.config.relay_allow_public && !isPrivateAddress(remoteAddress)) {
+      console.warn(JSON.stringify({ kind: "dglab.relay_rejected", reason: "non_private_origin", remoteAddress }));
+      ws.close(1008, "origin not allowed");
+      return;
+    }
+
+    if (this.clients.size >= this.config.relay_max_clients) {
+      console.warn(JSON.stringify({ kind: "dglab.relay_rejected", reason: "too_many_clients", remoteAddress }));
+      ws.close(1013, "too many clients");
+      return;
+    }
+
     const clientId = randomUUID();
-    this.clients.set(clientId, { ws, lastSeen: Date.now() });
+    this.clients.set(clientId, { ws, lastSeen: Date.now(), pulseTimers: new Set() });
     this.send(ws, { type: "bind", clientId, targetId: "", message: "targetId" });
 
-    ws.on("message", (data) => this.handleMessage(ws, data.toString()));
+    // Any inbound frame counts as liveness, including heartbeat replies that
+    // do not carry a full envelope.
+    const touch = () => {
+      const client = this.clients.get(clientId);
+      if (client) {
+        client.lastSeen = Date.now();
+      }
+    };
+
+    ws.on("message", (data) => {
+      touch();
+      this.handleMessage(ws, data.toString());
+    });
+    ws.on("pong", touch);
     ws.on("close", () => this.disconnect(clientId));
     ws.on("error", () => this.disconnect(clientId));
   }
@@ -165,11 +208,46 @@ export class DglabRelayServer {
       return;
     }
 
-    const seconds = Math.max(1, Math.ceil(Number(data.time ?? 1)));
-    const intervalMs = 1000;
-    for (let index = 0; index < seconds; index += 1) {
-      setTimeout(() => this.forwardToTarget(data, `pulse-${data.message}`), index * intervalMs);
+    const senderId = this.findSenderId(ws, data);
+    const sender = senderId ? this.clients.get(senderId) : undefined;
+    if (!sender) {
+      // Without a sender the timers could not be tracked, and an untracked
+      // timer is one that panic cannot recall.
+      this.send(ws, { type: "error", clientId: data.clientId!, targetId: data.targetId!, message: "404" });
+      return;
     }
+
+    // `time` arrives from a paired LAN peer. Unbounded, it would let one
+    // message allocate an arbitrary number of timers and stall the event loop,
+    // taking every stop path down with it.
+    const requested = Number(data.time ?? 1);
+    const seconds = Number.isFinite(requested)
+      ? Math.min(MAX_PULSE_SECONDS, Math.max(1, Math.ceil(requested)))
+      : 1;
+    const intervalMs = 1000;
+
+    // The first forward goes out immediately; the rest are tracked so panic,
+    // unbind and shutdown can recall them.
+    this.forwardToTarget(data, `pulse-${data.message}`);
+    for (let index = 1; index < seconds; index += 1) {
+      const timer = setTimeout(() => {
+        sender.pulseTimers.delete(timer);
+        this.forwardToTarget(data, `pulse-${data.message}`);
+      }, index * intervalMs);
+      timer.unref?.();
+      sender.pulseTimers.add(timer);
+    }
+  }
+
+  private cancelPulsesFor(clientId: string): void {
+    const client = this.clients.get(clientId);
+    if (!client) {
+      return;
+    }
+    for (const timer of client.pulseTimers) {
+      clearTimeout(timer);
+    }
+    client.pulseTimers.clear();
   }
 
   private forwardToTarget(data: RelayMessage, message: string): void {
@@ -191,8 +269,10 @@ export class DglabRelayServer {
   }
 
   private disconnect(clientId: string): void {
+    this.cancelPulsesFor(clientId);
     const pairedId = this.pairings.get(clientId) ?? this.reversePairings.get(clientId);
     if (pairedId) {
+      this.cancelPulsesFor(pairedId);
       const message = { type: "break", clientId, targetId: pairedId, message: "209" };
       this.send(this.clients.get(pairedId)?.ws, message);
       this.pairings.delete(clientId);
@@ -232,8 +312,44 @@ export class DglabRelayServer {
         continue;
       }
       this.send(client.ws, { type: "heartbeat", clientId, targetId: this.pairings.get(clientId) ?? this.reversePairings.get(clientId) ?? "", message: "200" });
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.ping();
+      }
     }
   }
+}
+
+function isPrivateAddress(address: string | undefined): boolean {
+  if (!address) {
+    return false;
+  }
+  // ::ffff:192.168.1.5 style mapped addresses arrive on dual-stack sockets.
+  const normalized = address.replace(/^::ffff:/i, "").toLowerCase();
+
+  if (normalized === "::1" || normalized === "127.0.0.1" || normalized === "localhost") {
+    return true;
+  }
+  if (/^127(?:\.\d{1,3}){3}$/.test(normalized)) {
+    return true;
+  }
+  if (/^10(?:\.\d{1,3}){3}$/.test(normalized)) {
+    return true;
+  }
+  if (/^192\.168(?:\.\d{1,3}){2}$/.test(normalized)) {
+    return true;
+  }
+  const class172 = /^172\.(\d{1,3})(?:\.\d{1,3}){2}$/.exec(normalized);
+  if (class172 && Number(class172[1]) >= 16 && Number(class172[1]) <= 31) {
+    return true;
+  }
+  // Link-local IPv4 plus IPv6 unique-local and link-local ranges.
+  if (/^169\.254(?:\.\d{1,3}){2}$/.test(normalized)) {
+    return true;
+  }
+  if (/^f[cd][0-9a-f]{2}:/.test(normalized) || /^fe80:/.test(normalized)) {
+    return true;
+  }
+  return false;
 }
 
 export async function startLocalDglabRelay(config: AppConfig["dglab"]): Promise<DglabRelayServer | undefined> {

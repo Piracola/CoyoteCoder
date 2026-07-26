@@ -1,5 +1,6 @@
 import type { CoyoteAppContext } from "../../app/context.js";
 import type { AppConfig, UpstreamProviderConfig } from "../../config/schema.js";
+import { listLanCandidates } from "../../dglab/controller.js";
 import { loadDglabWaveforms, type DglabWaveformCatalog } from "../../dglab/waves.js";
 
 export async function buildUiState(context: CoyoteAppContext) {
@@ -20,9 +21,18 @@ export async function buildUiState(context: CoyoteAppContext) {
     policy: toClientPolicy(context.policy.getSettings()),
     dglab: context.dglab?.getStatus() ?? { enabled: false, connected: false, bound: false },
     waveforms: buildWaveformState(waveformCatalog),
-    events: context.bus.getRecent().slice(-20),
-    shockPlans: context.shockPlans?.getRecent(20) ?? []
+    // Honour the configured retention rather than a fixed window, but keep a
+    // sane cap so the console payload stays small.
+    events: context.bus.getRecent().slice(-uiHistoryLimit(context)),
+    shockPlans: context.shockPlans?.getRecent(uiHistoryLimit(context)) ?? [],
+    lanCandidates: listLanCandidates()
   };
+}
+
+const UI_HISTORY_MAX = 200;
+
+function uiHistoryLimit(context: CoyoteAppContext): number {
+  return Math.min(UI_HISTORY_MAX, Math.max(20, context.config.privacy.recent_event_limit));
 }
 
 export async function getWaveformCatalog(context: CoyoteAppContext): Promise<DglabWaveformCatalog> {
@@ -39,10 +49,41 @@ export function buildWaveformState(catalog: DglabWaveformCatalog) {
       source: waveform.source,
       fileName: waveform.fileName,
       sampleCount: waveform.waves.length,
-      durationMs: waveform.waves.length * 100
+      durationMs: waveform.waves.length * 100,
+      preview: decodeWaveformPreview(waveform.waves)
     })),
     errors: catalog.errors
   };
+}
+
+export interface WaveformPreview {
+  /** Per-slot pulse amplitude, 0-100. */
+  amplitude: number[];
+  /** Per-slot pulse frequency byte. */
+  frequency: number[];
+}
+
+/**
+ * A DG-LAB V3 sample is 16 hex chars: four frequency bytes followed by four
+ * amplitude bytes, each covering 25ms. Decoding here lets the console draw the
+ * waveform instead of showing a bare hex string.
+ */
+export function decodeWaveformPreview(waves: string[]): WaveformPreview {
+  const amplitude: number[] = [];
+  const frequency: number[] = [];
+
+  for (const sample of waves) {
+    const hex = sample.trim().toUpperCase();
+    if (!/^[0-9A-F]{16}$/.test(hex)) {
+      continue;
+    }
+    for (let slot = 0; slot < 4; slot += 1) {
+      frequency.push(Number.parseInt(hex.slice(slot * 2, slot * 2 + 2), 16));
+      amplitude.push(Number.parseInt(hex.slice(8 + slot * 2, 8 + slot * 2 + 2), 16));
+    }
+  }
+
+  return { amplitude, frequency };
 }
 
 export function toClientProvider(provider: UpstreamProviderConfig, activeProvider: string) {
@@ -57,9 +98,15 @@ export function toClientProvider(provider: UpstreamProviderConfig, activeProvide
   };
 }
 
+/**
+ * writeConfigPatch merges at the top level only, so this must reproduce every
+ * upstream key that should survive a console save — anything omitted is erased
+ * from config.yaml.
+ */
 export function toPersistedUpstream(upstream: AppConfig["upstream"]) {
   return {
     active_provider: upstream.active_provider,
+    stream_idle_timeout_ms: upstream.stream_idle_timeout_ms,
     providers: upstream.providers.map((provider) => ({
       id: provider.id,
       name: provider.name,
@@ -79,7 +126,12 @@ export function toPersistedSafety(safety: AppConfig["safety"]) {
     channel_limits: { ...safety.channel_limits },
     max_continuous_output_ms: safety.max_continuous_output_ms,
     max_events_per_minute: safety.max_events_per_minute,
-    panic_zero_on_exit: safety.panic_zero_on_exit
+    panic_zero_on_exit: safety.panic_zero_on_exit,
+    max_intensity_step: safety.max_intensity_step,
+    min_interval_ms: safety.min_interval_ms,
+    max_session_ms: safety.max_session_ms,
+    idle_disarm_ms: safety.idle_disarm_ms,
+    respect_device_soft_limit: safety.respect_device_soft_limit
   };
 }
 

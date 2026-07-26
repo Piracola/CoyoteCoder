@@ -16,8 +16,11 @@ upstream:
       protocol: "openai"
       base_url: "http://127.0.0.1:11434/v1"
       timeout_ms: 120000
+  # 头部超时只覆盖到首字节；这一项限制流式响应中途卡住的时间，0 表示不限制。
+  stream_idle_timeout_ms: 180000
 
 privacy:
+  # 开启后会在事件里保留截断的请求/响应原文，仅用于排查问题，默认关闭。
   store_raw_content: false
   recent_event_limit: 200
 
@@ -30,6 +33,16 @@ safety:
   max_continuous_output_ms: 3000
   max_events_per_minute: 120
   panic_zero_on_exit: true
+  # 单次计划相对上一次的最大强度增幅，让强度逐级爬升而不是一步到上限。
+  max_intensity_step: 0.2
+  # 同一通道两次离散计划之间的最小间隔（流式连续计划不受此限制）。
+  min_interval_ms: 150
+  # 单次“启动反馈”的最长时长；到点自动停止。0 表示关闭。
+  max_session_ms: 1800000
+  # 无事件多久后自动停止反馈。0 表示关闭。
+  idle_disarm_ms: 300000
+  # 与郊狼 APP 上报的软上限取更严格的一方。
+  respect_device_soft_limit: true
 
 policy:
   request_started:
@@ -68,8 +81,13 @@ policy:
 dglab:
   enabled: true
   socket_url: "ws://127.0.0.1:9999"
-  qr_host: "auto" # auto picks the first non-internal IPv4 address for APP scanning
+  # auto 会按“手机可达性”给本机网卡打分后挑选，虚拟网卡（WSL / Docker / VPN）会被降权。
+  # 手机扫不上时可直接填某个具体地址，控制台的配对面板会列出候选。
+  qr_host: "auto"
   qr_port: 9999
-  default_channels:
-    request: "A"
-    response: "B"
+  # 内置 Socket V2 中继的监听地址。手机配对需要局域网可达，因此默认比 server.host 宽；
+  # 如果这台机器同时连着不可信网络，可改成某张网卡的具体地址。
+  relay_bind_host: "0.0.0.0"
+  # 官方 APP 无法携带自定义密钥，因此中继改为拒绝来自非私有网段的连接。
+  relay_allow_public: false
+  relay_max_clients: 8

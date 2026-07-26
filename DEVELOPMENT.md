@@ -53,6 +53,8 @@ npm run dev
 | `DGLAB_QR_PORT` | 覆盖二维码中的 Socket V2 端口。 |
 | `COYOTE_WAVEFORMS_DIR` | 覆盖自定义 DG-LAB 波形目录。 |
 
+新增的安全参数（`max_intensity_step`、`min_interval_ms`、`max_session_ms`、`idle_disarm_ms`、`respect_device_soft_limit`）和上游 `stream_idle_timeout_ms` 见 `app/config.example.yaml` 里的注释，控制台“安全设置”页也可直接调整。
+
 ## 构建流程
 
 当前 Windows 便携版构建大致分为：
@@ -115,6 +117,8 @@ npm run tauri:build
 
 ## GitHub Actions 构建
 
+`verify` workflow 会在推送到 `main` 和所有 PR 上跑类型检查、测试和构建。
+
 推荐使用 GitHub Actions 发布便携版：
 
 1. 推送 `v*` tag，或手动运行 `Build Windows Portable` workflow。
@@ -127,6 +131,7 @@ npm run tauri:build
 - `GET /status`
 - `GET /ui`
 - `GET /ui/state`
+- `GET /ui/stream`（控制台实时事件推送，SSE）
 - `POST /ui/settings`
 - `POST /ui/upstream`
 - `GET /ui/waveforms`
@@ -140,6 +145,7 @@ npm run tauri:build
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 - `POST /v1/completions`
+- `POST /v1/messages`（Anthropic 原生入口，同样会产生反馈事件）
 - `POST /v1/embeddings`（Gemini 上游适配）
 - `GET /events/recent`
 - `GET /shock/recent`

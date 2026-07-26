@@ -3,7 +3,7 @@ use std::os::windows::process::CommandExt;
 use std::{
     fs::{create_dir_all, read_to_string, write, File},
     io::{self, Read, Write},
-    net::TcpStream,
+    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -22,6 +22,7 @@ const MENU_SHOW_ID: &str = "tray-show";
 const MENU_PAUSE_ID: &str = "tray-pause";
 const MENU_EXIT_ID: &str = "tray-exit";
 const WINDOW_SETTINGS_FILE: &str = "window-settings.txt";
+const DEFAULT_BACKEND_PORT: u16 = 8787;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -93,6 +94,12 @@ fn spawn_portable_backend() -> Result<Option<Child>, io::Error> {
         return Ok(None);
     }
 
+    // A second launch must not start a rival backend that then fails to bind
+    // the port; attach to the running one instead.
+    if backend_already_running(resolve_backend_port()) {
+        return Ok(None);
+    }
+
     let log_dir = exe_dir.join("logs");
     create_dir_all(&log_dir)?;
 
@@ -103,7 +110,6 @@ fn spawn_portable_backend() -> Result<Option<Child>, io::Error> {
     command
         .current_dir(&exe_dir)
         .env("COYOTE_CONFIG", "config.yaml")
-        .env("PORT", "8787")
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -112,6 +118,56 @@ fn spawn_portable_backend() -> Result<Option<Child>, io::Error> {
     command.creation_flags(CREATE_NO_WINDOW);
 
     command.spawn().map(Some)
+}
+
+/// Port the backend listens on. Mirrors the backend's own resolution order so
+/// the tray and the sidecar cannot disagree.
+fn resolve_backend_port() -> u16 {
+    if let Ok(port) = std::env::var("PORT") {
+        if let Ok(parsed) = port.trim().parse::<u16>() {
+            return parsed;
+        }
+    }
+
+    if let Some(port) = read_port_from_config() {
+        return port;
+    }
+
+    DEFAULT_BACKEND_PORT
+}
+
+fn read_port_from_config() -> Option<u16> {
+    let path = current_exe_dir().ok()?.join("config.yaml");
+    let content = read_to_string(path).ok()?;
+
+    let mut in_server_block = false;
+    for line in content.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("server:") {
+            in_server_block = true;
+            continue;
+        }
+        // A new top-level key ends the server block.
+        if in_server_block && !trimmed.starts_with(' ') && !trimmed.trim().is_empty() {
+            break;
+        }
+        if in_server_block {
+            if let Some(value) = trimmed.trim().strip_prefix("port:") {
+                if let Ok(parsed) = value.trim().parse::<u16>() {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn backend_already_running(port: u16) -> bool {
+    TcpStream::connect_timeout(
+        &SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(300),
+    )
+    .is_ok()
 }
 
 fn current_exe_dir() -> Result<PathBuf, io::Error> {
@@ -221,12 +277,16 @@ fn window_settings_path() -> Result<PathBuf, io::Error> {
 }
 
 fn pause_feedback() -> Result<(), io::Error> {
-    let mut stream = TcpStream::connect(("127.0.0.1", 8787))?;
+    // Resolve the port rather than assuming the default: a user who changed
+    // server.port would otherwise get a tray button that silently does nothing.
+    let port = resolve_backend_port();
+    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    stream.write_all(
-        b"POST /ui/stop HTTP/1.1\r\nHost: 127.0.0.1:8787\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-    )?;
+    let request = format!(
+        "POST /ui/stop HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes())?;
     stream.flush()?;
 
     let mut response = [0; 128];

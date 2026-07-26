@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import QRCode from "qrcode";
 import type { CoyoteAppContext } from "../../app/context.js";
 import type { Channel } from "../../config/schema.js";
-import { softPulseWave } from "../../dglab/waves.js";
+import { prepareWaveForPlan, resolveWaveform, softPulseWave } from "../../dglab/waves.js";
 import type { ShockPlan } from "../../shock/types.js";
 import { clamp, clampInteger, parseJsonBody, readChannel, readNumber } from "./body.js";
 import { buildUiState } from "./state.js";
@@ -20,6 +20,21 @@ export function registerUiRuntimeRoutes(app: FastifyInstance, context: CoyoteApp
   app.post("/ui/stop", async () => {
     context.safety.disarm();
     context.bus.emit({ type: "safety.disarmed", timestamp: Date.now() });
+    // Zero the device but keep the socket bound: pausing feedback should not
+    // force the user to re-scan the pairing QR to resume.
+    if (context.emergencyZero) {
+      try {
+        await context.emergencyZero();
+      } catch (error) {
+        console.error(JSON.stringify({ kind: "ui.stop_zero_failed", message: String(error) }));
+      }
+    }
+    return buildUiState(context);
+  });
+
+  app.post("/ui/disconnect", async () => {
+    context.safety.disarm();
+    context.bus.emit({ type: "safety.disarmed", timestamp: Date.now() });
     if (context.dglab) {
       await context.dglab.disconnect();
     }
@@ -28,10 +43,12 @@ export function registerUiRuntimeRoutes(app: FastifyInstance, context: CoyoteApp
 
   app.post("/ui/test-shock", async (request) => {
     const body = parseJsonBody(request.body);
+    const waveformId = typeof body?.waveformId === "string" && body.waveformId.trim() ? body.waveformId.trim() : undefined;
     const result = await sendTestShock(context, {
       channel: readChannel(body, "channel") ?? "A",
       intensity: readNumber(body, "intensity") ?? TEST_SHOCK_MIN_INTENSITY,
-      durationMs: readNumber(body, "durationMs") ?? TEST_SHOCK_DEFAULT_DURATION_MS
+      durationMs: readNumber(body, "durationMs") ?? TEST_SHOCK_DEFAULT_DURATION_MS,
+      waveformId
     });
     return {
       ...(await buildUiState(context)),
@@ -83,7 +100,7 @@ function friendlyDglabError(error: unknown): string {
 
 async function sendTestShock(
   context: CoyoteAppContext,
-  input: { channel: Channel; intensity: number; durationMs: number }
+  input: { channel: Channel; intensity: number; durationMs: number; waveformId?: string }
 ): Promise<{ outcome: "sent" | "blocked" | "error"; dryRun: boolean; message: string }> {
   const timestamp = Date.now();
   const status = context.dglab?.getStatus();
@@ -93,7 +110,8 @@ async function sendTestShock(
     channel: input.channel,
     intensity: clamp(input.intensity, TEST_SHOCK_MIN_INTENSITY, 1),
     durationMs: clampInteger(input.durationMs, 1, 1000),
-    reason: "dglab.test"
+    reason: "dglab.test",
+    waveId: input.waveformId
   };
 
   context.bus.emit({ type: "dglab.test", timestamp });
@@ -125,15 +143,36 @@ async function sendTestShock(
   }
 
   try {
-    await context.dglab.clear(safePlan.channel);
-    await context.dglab.setStrength(safePlan.channel, Math.round(safePlan.intensity * 100));
-    await context.dglab.pulse(safePlan.channel, softPulseWave, safePlan.durationMs);
+    if (context.sendPlan) {
+      // Go through the engine's serialized chain so this cannot interleave with
+      // an in-flight triplet. The sink resolves the configured waveform, so the
+      // test exercises the same path a real event would.
+      await context.sendPlan(safePlan);
+    } else {
+      const waves = await resolveTestWaves(context, safePlan);
+      await context.dglab.clear(safePlan.channel);
+      await context.dglab.setStrength(safePlan.channel, Math.round(safePlan.intensity * 100));
+      await context.dglab.pulse(safePlan.channel, waves, safePlan.durationMs);
+    }
     recordShockPlan(context, timestamp, plan, safePlan, "sent");
     return { outcome: "sent", dryRun: false, message: "测试电击已发送" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     recordShockPlan(context, timestamp, plan, safePlan, "error", message);
     return { outcome: "error", dryRun: false, message };
+  }
+}
+
+async function resolveTestWaves(context: CoyoteAppContext, plan: ShockPlan): Promise<string[]> {
+  if (!context.waveforms) {
+    return softPulseWave;
+  }
+  try {
+    const catalog = await context.waveforms.getCatalog();
+    const waveform = resolveWaveform(catalog, plan.waveId, plan.reason);
+    return prepareWaveForPlan(waveform.waves, false, plan.durationMs);
+  } catch {
+    return softPulseWave;
   }
 }
 

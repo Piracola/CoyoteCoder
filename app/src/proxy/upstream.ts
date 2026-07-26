@@ -42,6 +42,7 @@ interface ChatRequest {
   tool_choice?: unknown;
   input?: unknown;
   instructions?: unknown;
+  stream_options?: { include_usage?: boolean };
 }
 
 interface CompletionRequest {
@@ -77,6 +78,13 @@ interface OpenAiTool {
   };
 }
 
+interface NativeToolCall {
+  id: string;
+  name: string;
+  /** Raw JSON string, matching OpenAI's function.arguments. */
+  arguments: string;
+}
+
 interface NativeTextResponse {
   text: string;
   model?: string;
@@ -84,6 +92,7 @@ interface NativeTextResponse {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  toolCalls?: NativeToolCall[];
 }
 
 interface OpenAiModelSummary {
@@ -100,6 +109,11 @@ interface FetchInitWithDispatcher {
   signal: AbortSignal;
   dispatcher?: Dispatcher;
 }
+
+// Anthropic requires max_tokens and rejects a value above the model's ceiling
+// (claude-3-opus caps at 4096). This only applies when the client omitted one
+// entirely, so it must be low enough to be valid for every model.
+const ANTHROPIC_DEFAULT_MAX_TOKENS = 4096;
 
 let envProxyAgent: EnvHttpProxyAgent | undefined;
 
@@ -459,7 +473,8 @@ async function fetchWithTimeout(
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  input.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+  const forwardAbort = () => controller.abort();
+  input.signal?.addEventListener("abort", forwardAbort, { once: true });
 
   const body = input.body ? new Uint8Array(input.body) : undefined;
   try {
@@ -472,7 +487,10 @@ async function fetchWithTimeout(
     };
     return (await undiciFetch(url, init as unknown as Parameters<typeof undiciFetch>[1])) as unknown as Response;
   } finally {
+    // Only the connect phase is bounded here; the streaming body is guarded by
+    // the idle timeout in the SSE relay.
     clearTimeout(timeout);
+    input.signal?.removeEventListener("abort", forwardAbort);
   }
 }
 
@@ -495,28 +513,37 @@ function isLocalAddress(hostname: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized.endsWith(".localhost");
 }
 
-function parseRequestBody(body: Buffer | undefined): ChatRequest {
-  if (!body || body.byteLength === 0) {
-    return {};
+/** Malformed client input; the proxy answers 400 rather than a 502. */
+export class UpstreamRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UpstreamRequestError";
   }
-  const parsed = JSON.parse(body.toString("utf8")) as unknown;
-  return isRecord(parsed) ? (parsed as ChatRequest) : {};
+}
+
+function parseJsonRequestBody<T>(body: Buffer | undefined): T {
+  if (!body || body.byteLength === 0) {
+    return {} as T;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString("utf8")) as unknown;
+  } catch (error) {
+    throw new UpstreamRequestError(`invalid JSON request body: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return isRecord(parsed) ? (parsed as T) : ({} as T);
+}
+
+function parseRequestBody(body: Buffer | undefined): ChatRequest {
+  return parseJsonRequestBody<ChatRequest>(body);
 }
 
 function parseCompletionBody(body: Buffer | undefined): CompletionRequest {
-  if (!body || body.byteLength === 0) {
-    return {};
-  }
-  const parsed = JSON.parse(body.toString("utf8")) as unknown;
-  return isRecord(parsed) ? (parsed as CompletionRequest) : {};
+  return parseJsonRequestBody<CompletionRequest>(body);
 }
 
 function parseEmbeddingBody(body: Buffer | undefined): EmbeddingRequest {
-  if (!body || body.byteLength === 0) {
-    return {};
-  }
-  const parsed = JSON.parse(body.toString("utf8")) as unknown;
-  return isRecord(parsed) ? (parsed as EmbeddingRequest) : {};
+  return parseJsonRequestBody<EmbeddingRequest>(body);
 }
 
 function responsesToChatBody(body: ChatRequest): ChatRequest {
@@ -529,19 +556,84 @@ function responsesToChatBody(body: ChatRequest): ChatRequest {
     messages.push({ role: "user", content: body.input });
   } else if (Array.isArray(body.input)) {
     for (const item of body.input) {
-      if (isRecord(item)) {
-        const role = typeof item.role === "string" ? item.role : "user";
-        messages.push({ role, content: item.content });
+      if (!isRecord(item)) {
+        continue;
       }
+
+      // Responses encodes a tool result as a standalone item rather than a
+      // message; dropping it silently breaks multi-turn tool loops.
+      if (item.type === "function_call_output") {
+        messages.push({
+          role: "tool",
+          content: typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? ""),
+          tool_call_id: typeof item.call_id === "string" ? item.call_id : undefined
+        });
+        continue;
+      }
+
+      // An assistant's own tool call replayed as conversation history.
+      if (item.type === "function_call") {
+        messages.push({
+          role: "assistant",
+          content: typeof item.name === "string" ? `[tool_call:${item.name}] ${stringifyArguments(item.arguments)}` : ""
+        });
+        continue;
+      }
+
+      const role = typeof item.role === "string" ? item.role : "user";
+      messages.push({ role, content: item.content });
     }
   }
 
   return {
     ...body,
     messages: messages.length > 0 ? messages : body.messages,
+    // Responses uses a flat tool shape; normalize it so the Anthropic and
+    // Gemini converters (which expect tool.function.name) still see them.
+    tools: normalizeResponsesTools(body.tools),
     max_tokens: body.max_output_tokens ?? body.max_tokens,
     stream: body.stream === true
   };
+}
+
+function stringifyArguments(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  return value === undefined ? "" : JSON.stringify(value);
+}
+
+/**
+ * Accepts both the chat shape ({type:"function", function:{name,...}}) and the
+ * Responses shape ({type:"function", name, parameters}).
+ */
+function normalizeResponsesTools(tools: OpenAiTool[] | undefined): OpenAiTool[] | undefined {
+  if (!Array.isArray(tools) || tools.length === 0) {
+    return tools;
+  }
+
+  const normalized: OpenAiTool[] = [];
+  for (const tool of tools) {
+    if (!isRecord(tool)) {
+      continue;
+    }
+    if (tool.function && isRecord(tool.function)) {
+      normalized.push(tool);
+      continue;
+    }
+    const flat = tool as unknown as Record<string, unknown>;
+    if (typeof flat.name === "string") {
+      normalized.push({
+        type: "function",
+        function: {
+          name: flat.name,
+          description: typeof flat.description === "string" ? flat.description : undefined,
+          parameters: flat.parameters
+        }
+      });
+    }
+  }
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function completionToChatBody(body: CompletionRequest): ChatRequest {
@@ -575,7 +667,7 @@ function toAnthropicRequest(body: ChatRequest): Record<string, unknown> {
   const system = collectSystemText(body.messages);
   const request: Record<string, unknown> = {
     model: body.model,
-    max_tokens: body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
     messages: mergeAdjacentMessages(
       (body.messages ?? [])
         .filter((message) => message.role !== "system" && message.role !== "developer")
@@ -663,10 +755,24 @@ function contentTextParts(content: unknown): string[] {
       parts.push(item.text);
     } else if (typeof item.type === "string" && typeof item.content === "string") {
       parts.push(item.content);
+    } else if (typeof item.type === "string" && NON_TEXT_CONTENT_TYPES.has(item.type)) {
+      // These translators are text-only. Leave a visible marker so the model
+      // is told something was omitted rather than silently losing the part.
+      parts.push(`[${item.type} omitted by CoyoteCoder text-only translation]`);
     }
   }
   return parts;
 }
+
+const NON_TEXT_CONTENT_TYPES = new Set([
+  "image_url",
+  "input_image",
+  "input_audio",
+  "input_file",
+  "image",
+  "audio",
+  "document"
+]);
 
 function fallbackMessageText(message: ChatMessage): string {
   if (message.role === "tool") {
@@ -742,11 +848,19 @@ function toAnthropicToolChoice(toolChoice: unknown): Record<string, unknown> | u
 }
 
 function anthropicToTextResponse(payload: Record<string, unknown>, fallbackModel?: string): NativeTextResponse {
-  const content = Array.isArray(payload.content) ? payload.content : [];
-  const text = content
-    .filter(isRecord)
-    .map((item) => (typeof item.text === "string" ? item.text : ""))
-    .join("");
+  const content = Array.isArray(payload.content) ? payload.content.filter(isRecord) : [];
+  const text = content.map((item) => (typeof item.text === "string" ? item.text : "")).join("");
+  const toolCalls: NativeToolCall[] = [];
+  for (const item of content) {
+    if (item.type !== "tool_use" || typeof item.name !== "string") {
+      continue;
+    }
+    toolCalls.push({
+      id: typeof item.id === "string" ? item.id : `call_${randomId()}`,
+      name: item.name,
+      arguments: JSON.stringify(item.input ?? {})
+    });
+  }
   const usage = isRecord(payload.usage) ? payload.usage : {};
   const inputTokens = readNumber(usage.input_tokens);
   const outputTokens = readNumber(usage.output_tokens);
@@ -756,7 +870,8 @@ function anthropicToTextResponse(payload: Record<string, unknown>, fallbackModel
     finishReason: mapAnthropicFinish(typeof payload.stop_reason === "string" ? payload.stop_reason : undefined),
     promptTokens: inputTokens,
     completionTokens: outputTokens,
-    totalTokens: inputTokens !== undefined && outputTokens !== undefined ? inputTokens + outputTokens : undefined
+    totalTokens: inputTokens !== undefined && outputTokens !== undefined ? inputTokens + outputTokens : undefined,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined
   };
 }
 
@@ -766,6 +881,17 @@ function geminiToTextResponse(payload: Record<string, unknown>, fallbackModel?: 
   const content = first && isRecord(first.content) ? first.content : {};
   const parts = Array.isArray(content.parts) ? content.parts.filter(isRecord) : [];
   const text = parts.map((part) => (typeof part.text === "string" ? part.text : "")).join("");
+  const toolCalls: NativeToolCall[] = [];
+  for (const part of parts) {
+    if (!isRecord(part.functionCall) || typeof part.functionCall.name !== "string") {
+      continue;
+    }
+    toolCalls.push({
+      id: `call_${randomId()}`,
+      name: part.functionCall.name,
+      arguments: JSON.stringify(part.functionCall.args ?? {})
+    });
+  }
   const usage = isRecord(payload.usageMetadata) ? payload.usageMetadata : {};
   return {
     text,
@@ -773,11 +899,25 @@ function geminiToTextResponse(payload: Record<string, unknown>, fallbackModel?: 
     finishReason: mapGeminiFinish(first && typeof first.finishReason === "string" ? first.finishReason : undefined),
     promptTokens: readNumber(usage.promptTokenCount),
     completionTokens: readNumber(usage.candidatesTokenCount),
-    totalTokens: readNumber(usage.totalTokenCount)
+    totalTokens: readNumber(usage.totalTokenCount),
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined
   };
 }
 
 function toOpenAiChatResponse(native: NativeTextResponse): Record<string, unknown> {
+  const message: Record<string, unknown> = {
+    role: "assistant",
+    // OpenAI sends content: null alongside tool calls rather than an empty string.
+    content: native.toolCalls && !native.text ? null : native.text
+  };
+  if (native.toolCalls) {
+    message.tool_calls = native.toolCalls.map((call) => ({
+      id: call.id,
+      type: "function",
+      function: { name: call.name, arguments: call.arguments }
+    }));
+  }
+
   return {
     id: `chatcmpl-${randomId()}`,
     object: "chat.completion",
@@ -786,8 +926,8 @@ function toOpenAiChatResponse(native: NativeTextResponse): Record<string, unknow
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content: native.text },
-        finish_reason: native.finishReason ?? "stop"
+        message,
+        finish_reason: native.finishReason ?? (native.toolCalls ? "tool_calls" : "stop")
       }
     ],
     usage: toOpenAiUsage(native)
@@ -824,6 +964,30 @@ function toOpenAiCompletionResponse(native: NativeTextResponse): Record<string, 
 
 function toOpenAiResponsesResponse(native: NativeTextResponse): Record<string, unknown> {
   const id = `resp_${randomId()}`;
+  const output: Record<string, unknown>[] = [];
+
+  if (native.text) {
+    output.push({
+      id: `msg_${randomId()}`,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: native.text, annotations: [] }]
+    });
+  }
+  // Responses represents tool calls as flat function_call items, not as a
+  // tool_calls array hanging off a message.
+  for (const call of native.toolCalls ?? []) {
+    output.push({
+      id: `fc_${randomId()}`,
+      type: "function_call",
+      status: "completed",
+      call_id: call.id,
+      name: call.name,
+      arguments: call.arguments
+    });
+  }
+
   return {
     id,
     object: "response",
@@ -831,16 +995,8 @@ function toOpenAiResponsesResponse(native: NativeTextResponse): Record<string, u
     status: "completed",
     model: native.model,
     output_text: native.text,
-    output: [
-      {
-        id: `msg_${randomId()}`,
-        type: "message",
-        status: "completed",
-        role: "assistant",
-        content: [{ type: "output_text", text: native.text, annotations: [] }]
-      }
-    ],
-    usage: toOpenAiUsage(native)
+    output,
+    usage: toResponsesUsage(native.promptTokens ?? 0, native.completionTokens ?? 0, native.totalTokens)
   };
 }
 
@@ -860,11 +1016,24 @@ function toOpenAiEmbeddingsResponse(embeddings: unknown[], model: string): Recor
   };
 }
 
-function toOpenAiUsage(native: NativeTextResponse): Record<string, number | undefined> {
+function toOpenAiUsage(native: NativeTextResponse): Record<string, number> {
+  // Undefined members would be dropped by JSON.stringify and leave clients with
+  // a malformed usage object, so fall back to zeros.
+  const promptTokens = native.promptTokens ?? 0;
+  const completionTokens = native.completionTokens ?? 0;
   return {
-    prompt_tokens: native.promptTokens,
-    completion_tokens: native.completionTokens,
-    total_tokens: native.totalTokens
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: native.totalTokens ?? promptTokens + completionTokens
+  };
+}
+
+/** Responses names its usage fields differently from Chat Completions. */
+function toResponsesUsage(promptTokens: number, completionTokens: number, totalTokens?: number): Record<string, number> {
+  return {
+    input_tokens: promptTokens,
+    output_tokens: completionTokens,
+    total_tokens: totalTokens ?? promptTokens + completionTokens
   };
 }
 
@@ -966,9 +1135,119 @@ function readCreatedSeconds(value: unknown): number {
   return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : 0;
 }
 
-function transformAnthropicStream(upstream: Response, body: ChatRequest, endpoint: TextEndpoint): Response {
-  const id =
-    endpoint === "chat" ? `chatcmpl-${randomId()}` : endpoint === "completions" ? `cmpl-${randomId()}` : `resp_${randomId()}`;
+interface StreamUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+}
+
+interface StreamingToolCall {
+  ordinal: number;
+  callId: string;
+  name: string;
+  arguments: string;
+}
+
+/**
+ * Shared plumbing for the two upstream stream translators. Both need the same
+ * lifecycle: announce the response, forward text and tool-call fragments as
+ * they arrive, then close with a real finish reason and usage block.
+ */
+class StreamTranslation {
+  private readonly toolCalls = new Map<number, StreamingToolCall>();
+  private nextOrdinal = 0;
+  private text = "";
+  finishReason: string | null = null;
+  usage: StreamUsage = {};
+
+  constructor(
+    private readonly writer: SseWriter,
+    private readonly endpoint: TextEndpoint,
+    private readonly id: string,
+    private readonly model: string | undefined,
+    private readonly includeUsage = false
+  ) {}
+
+  /**
+   * Forwards upstream keep-alives as SSE comments. Without this, an upstream
+   * that is thinking but only sending pings looks completely idle to the
+   * relay's stall detector and gets killed as a hang.
+   */
+  keepAlive(): void {
+    this.writer.comment("keep-alive");
+  }
+
+  begin(): void {
+    if (this.endpoint === "responses") {
+      this.writer.responseCreated(this.id, this.model);
+    } else if (this.endpoint === "chat") {
+      this.writer.chatChunk(this.id, this.model, { role: "assistant" });
+    }
+  }
+
+  pushText(text: string): void {
+    if (!text) {
+      return;
+    }
+    this.text += text;
+    this.writer.textDelta(this.endpoint, this.id, this.model, text);
+  }
+
+  /** Opens a tool call keyed by the upstream's block index. */
+  openToolCall(blockIndex: number, callId: string, name: string): void {
+    if (this.toolCalls.has(blockIndex)) {
+      return;
+    }
+    const call: StreamingToolCall = { ordinal: this.nextOrdinal, callId, name, arguments: "" };
+    this.nextOrdinal += 1;
+    this.toolCalls.set(blockIndex, call);
+    this.writer.toolCallStart(this.endpoint, this.id, this.model, call);
+  }
+
+  appendToolArguments(blockIndex: number, fragment: string): void {
+    const call = this.toolCalls.get(blockIndex);
+    if (!call || !fragment) {
+      return;
+    }
+    call.arguments += fragment;
+    this.writer.toolCallArguments(this.endpoint, this.id, this.model, call, fragment);
+  }
+
+  /** For upstreams that deliver a whole tool call in one piece. */
+  emitCompleteToolCall(name: string, args: unknown): void {
+    const blockIndex = -1 - this.nextOrdinal;
+    this.openToolCall(blockIndex, `call_${randomId()}`, name);
+    this.appendToolArguments(blockIndex, JSON.stringify(args ?? {}));
+  }
+
+  finish(): void {
+    const calls = [...this.toolCalls.values()].sort((left, right) => left.ordinal - right.ordinal);
+    const finishReason = this.finishReason ?? (calls.length > 0 ? "tool_calls" : "stop");
+    this.writer.completed(
+      this.endpoint,
+      this.id,
+      this.model,
+      { finishReason, text: this.text, toolCalls: calls, usage: this.usage },
+      this.includeUsage
+    );
+    this.writer.done(this.endpoint);
+  }
+}
+
+/**
+ * Drives a translation over an upstream SSE body, guaranteeing the upstream
+ * reader is released and the controller closed exactly once no matter how the
+ * stream ends.
+ */
+function buildTranslatedStream(
+  upstream: Response,
+  body: ChatRequest,
+  endpoint: TextEndpoint,
+  idPrefix: string,
+  handleFrame: (payload: Record<string, unknown>, translation: StreamTranslation) => void
+): Response {
+  const id = `${idPrefix}${randomId()}`;
+  let cancelUpstream: (() => void) | undefined;
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const writer = new SseWriter(controller);
@@ -976,99 +1255,210 @@ function transformAnthropicStream(upstream: Response, body: ChatRequest, endpoin
       const reader = upstream.body?.getReader();
       if (!reader) {
         writer.done(endpoint);
-        controller.close();
+        closeQuietly(controller);
         return;
       }
 
-      try {
-        if (endpoint === "responses") {
-          writer.responseCreated(id, body.model);
-        } else if (endpoint === "chat") {
-          writer.chatChunk(id, body.model, { role: "assistant" });
+      cancelUpstream = () => {
+        void reader.cancel().catch(() => undefined);
+      };
+
+      const translation = new StreamTranslation(
+        writer,
+        endpoint,
+        id,
+        body.model,
+        body.stream_options?.include_usage === true
+      );
+      const consume = (data: string) => {
+        if (!data || data === "[DONE]") {
+          return;
         }
+        const payload = safeJson(data);
+        if (isRecord(payload)) {
+          handleFrame(payload, translation);
+        }
+      };
+
+      try {
+        translation.begin();
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           for (const event of parser.feed(value)) {
-            if (!event.data || event.data === "[DONE]") continue;
-            const payload = safeJson(event.data);
-            if (!isRecord(payload)) continue;
-            const text = readAnthropicStreamText(payload);
-            if (text) writer.textDelta(endpoint, id, body.model, text);
+            consume(event.data);
           }
         }
-
+        // A final frame not terminated by a blank line would otherwise be lost.
         for (const event of parser.end()) {
-          if (!event.data || event.data === "[DONE]") continue;
-          const payload = safeJson(event.data);
-          if (!isRecord(payload)) continue;
-          const text = readAnthropicStreamText(payload);
-          if (text) writer.textDelta(endpoint, id, body.model, text);
+          consume(event.data);
         }
 
-        writer.completed(endpoint, id, body.model);
-        writer.done(endpoint);
+        translation.finish();
       } catch (error) {
-        writer.error(error instanceof Error ? error.message : String(error));
+        // The controller may already be closed if the consumer went away;
+        // writing then throws and would mask the original failure.
+        try {
+          writer.error(endpoint, error instanceof Error ? error.message : String(error));
+        } catch {
+          // nothing further to report
+        }
+        void reader.cancel().catch(() => undefined);
       } finally {
-        controller.close();
+        closeQuietly(controller);
       }
+    },
+    cancel() {
+      // The downstream client walked away: release the upstream connection
+      // instead of letting the provider stream into a dead consumer.
+      cancelUpstream?.();
     }
   });
+
   return sseResponse(stream);
 }
 
-function transformGeminiStream(upstream: Response, body: ChatRequest, endpoint: TextEndpoint): Response {
-  const id =
-    endpoint === "chat" ? `chatcmpl-${randomId()}` : endpoint === "completions" ? `cmpl-${randomId()}` : `resp_${randomId()}`;
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const writer = new SseWriter(controller);
-      const parser = new SseParser();
-      const reader = upstream.body?.getReader();
-      if (!reader) {
-        writer.done(endpoint);
-        controller.close();
+function closeQuietly(controller: ReadableStreamDefaultController<Uint8Array>): void {
+  try {
+    controller.close();
+  } catch {
+    // already closed or errored
+  }
+}
+
+function transformAnthropicStream(upstream: Response, body: ChatRequest, endpoint: TextEndpoint): Response {
+  const prefix = endpoint === "chat" ? "chatcmpl-" : endpoint === "completions" ? "cmpl-" : "resp_";
+  return buildTranslatedStream(upstream, body, endpoint, prefix, (payload, translation) => {
+    const blockIndex = readNumber(payload.index) ?? 0;
+
+    switch (payload.type) {
+      case "message_start": {
+        const message = isRecord(payload.message) ? payload.message : undefined;
+        const usage = message && isRecord(message.usage) ? message.usage : undefined;
+        if (usage) {
+          translation.usage.promptTokens = readNumber(usage.input_tokens);
+        }
         return;
       }
-
-      try {
-        if (endpoint === "responses") {
-          writer.responseCreated(id, body.model);
-        } else if (endpoint === "chat") {
-          writer.chatChunk(id, body.model, { role: "assistant" });
+      case "content_block_start": {
+        const block = isRecord(payload.content_block) ? payload.content_block : undefined;
+        if (!block) {
+          return;
         }
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          for (const event of parser.feed(value)) {
-            if (!event.data || event.data === "[DONE]") continue;
-            const payload = safeJson(event.data);
-            if (!isRecord(payload)) continue;
-            const text = geminiToTextResponse(payload, body.model).text;
-            if (text) writer.textDelta(endpoint, id, body.model, text);
-          }
+        if (block.type === "tool_use" && typeof block.name === "string") {
+          translation.openToolCall(
+            blockIndex,
+            typeof block.id === "string" ? block.id : `call_${randomId()}`,
+            block.name
+          );
+          return;
         }
-
-        writer.completed(endpoint, id, body.model);
-        writer.done(endpoint);
-      } catch (error) {
-        writer.error(error instanceof Error ? error.message : String(error));
-      } finally {
-        controller.close();
+        if (typeof block.text === "string") {
+          translation.pushText(block.text);
+        }
+        return;
       }
+      case "content_block_delta": {
+        const delta = isRecord(payload.delta) ? payload.delta : undefined;
+        if (!delta) {
+          return;
+        }
+        if (typeof delta.text === "string") {
+          translation.pushText(delta.text);
+          return;
+        }
+        // Tool arguments stream in as JSON fragments.
+        if (typeof delta.partial_json === "string") {
+          translation.appendToolArguments(blockIndex, delta.partial_json);
+        }
+        return;
+      }
+      case "message_delta": {
+        const delta = isRecord(payload.delta) ? payload.delta : undefined;
+        if (delta && typeof delta.stop_reason === "string") {
+          translation.finishReason = mapAnthropicFinish(delta.stop_reason);
+        }
+        const usage = isRecord(payload.usage) ? payload.usage : undefined;
+        if (usage) {
+          translation.usage.completionTokens = readNumber(usage.output_tokens) ?? translation.usage.completionTokens;
+        }
+        return;
+      }
+      case "ping":
+        // Anthropic's keep-alive during long thinking. Translate it rather than
+        // swallowing it, or the stream looks stalled to the idle detector.
+        translation.keepAlive();
+        return;
+      default:
+        return;
     }
   });
-  return sseResponse(stream);
+}
+
+function transformGeminiStream(upstream: Response, body: ChatRequest, endpoint: TextEndpoint): Response {
+  const prefix = endpoint === "chat" ? "chatcmpl-" : endpoint === "completions" ? "cmpl-" : "resp_";
+  return buildTranslatedStream(upstream, body, endpoint, prefix, (payload, translation) => {
+    const candidates = Array.isArray(payload.candidates) ? payload.candidates.filter(isRecord) : [];
+    for (const candidate of candidates) {
+      const content = isRecord(candidate.content) ? candidate.content : undefined;
+      const parts = content && Array.isArray(content.parts) ? content.parts.filter(isRecord) : [];
+      for (const part of parts) {
+        if (typeof part.text === "string") {
+          translation.pushText(part.text);
+        }
+        // Gemini never splits a function call across chunks.
+        if (isRecord(part.functionCall) && typeof part.functionCall.name === "string") {
+          translation.emitCompleteToolCall(part.functionCall.name, part.functionCall.args);
+        }
+      }
+      if (typeof candidate.finishReason === "string") {
+        translation.finishReason = mapGeminiFinish(candidate.finishReason);
+      }
+    }
+
+    const usage = isRecord(payload.usageMetadata) ? payload.usageMetadata : undefined;
+    if (usage) {
+      translation.usage.promptTokens = readNumber(usage.promptTokenCount) ?? translation.usage.promptTokens;
+      translation.usage.completionTokens = readNumber(usage.candidatesTokenCount) ?? translation.usage.completionTokens;
+    }
+  });
+}
+
+interface StreamCompletion {
+  finishReason: string | null;
+  text: string;
+  toolCalls: StreamingToolCall[];
+  usage: StreamUsage;
 }
 
 class SseWriter {
   private readonly encoder = new TextEncoder();
   private readonly responseItemId = `msg_${randomId()}`;
+  private sequenceNumber = 0;
+  private responseTextStarted = false;
+  /**
+   * Responses output indices must be contiguous and must match the position of
+   * the item in the final `output` array. They are therefore assigned in
+   * emission order rather than derived from the tool-call ordinal: a
+   * tool-call-only turn (the common agent case) has no message at index 0.
+   */
+  private nextOutputIndex = 0;
+  private textOutputIndex?: number;
+  private readonly toolOutputIndex = new Map<string, number>();
 
   constructor(private readonly controller: ReadableStreamDefaultController<Uint8Array>) {}
+
+  private outputIndexForTool(callId: string): number {
+    const existing = this.toolOutputIndex.get(callId);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const index = this.nextOutputIndex;
+    this.nextOutputIndex += 1;
+    this.toolOutputIndex.set(callId, index);
+    return index;
+  }
 
   chatChunk(id: string, model: string | undefined, delta: Record<string, unknown>, finishReason: string | null = null): void {
     this.writeData({
@@ -1081,17 +1471,16 @@ class SseWriter {
   }
 
   responseCreated(id: string, model: string | undefined): void {
-    this.writeEvent("response.created", {
-      type: "response.created",
-      response: {
-        id,
-        object: "response",
-        created_at: nowSeconds(),
-        status: "in_progress",
-        model,
-        output: []
-      }
-    });
+    const response = {
+      id,
+      object: "response",
+      created_at: nowSeconds(),
+      status: "in_progress",
+      model,
+      output: []
+    };
+    this.writeEvent("response.created", { type: "response.created", response });
+    this.writeEvent("response.in_progress", { type: "response.in_progress", response });
   }
 
   textDelta(endpoint: TextEndpoint, id: string, model: string | undefined, text: string): void {
@@ -1103,24 +1492,196 @@ class SseWriter {
       this.completionChunk(id, model, text);
       return;
     }
+
+    // Responses requires the item/content-part scaffolding before deltas.
+    if (!this.responseTextStarted) {
+      this.responseTextStarted = true;
+      this.textOutputIndex = this.nextOutputIndex;
+      this.nextOutputIndex += 1;
+      this.writeEvent("response.output_item.added", {
+        type: "response.output_item.added",
+        output_index: this.textOutputIndex,
+        item: { id: this.responseItemId, type: "message", status: "in_progress", role: "assistant", content: [] }
+      });
+      this.writeEvent("response.content_part.added", {
+        type: "response.content_part.added",
+        item_id: this.responseItemId,
+        output_index: this.textOutputIndex,
+        content_index: 0,
+        part: { type: "output_text", text: "", annotations: [] }
+      });
+    }
+
     this.writeEvent("response.output_text.delta", {
       type: "response.output_text.delta",
       item_id: this.responseItemId,
-      output_index: 0,
+      output_index: this.textOutputIndex ?? 0,
       content_index: 0,
       delta: text
     });
   }
 
-  completed(endpoint: TextEndpoint, id: string, model: string | undefined): void {
+  toolCallStart(endpoint: TextEndpoint, id: string, model: string | undefined, call: StreamingToolCall): void {
     if (endpoint === "chat") {
-      this.chatChunk(id, model, {}, "stop");
+      this.chatChunk(id, model, {
+        tool_calls: [
+          {
+            index: call.ordinal,
+            id: call.callId,
+            type: "function",
+            function: { name: call.name, arguments: "" }
+          }
+        ]
+      });
+      return;
+    }
+    if (endpoint === "responses") {
+      this.writeEvent("response.output_item.added", {
+        type: "response.output_item.added",
+        output_index: this.outputIndexForTool(call.callId),
+        item: {
+          id: `fc_${call.callId}`,
+          type: "function_call",
+          status: "in_progress",
+          call_id: call.callId,
+          name: call.name,
+          arguments: ""
+        }
+      });
+    }
+    // Legacy /v1/completions has no representation for tool calls.
+  }
+
+  toolCallArguments(
+    endpoint: TextEndpoint,
+    id: string,
+    model: string | undefined,
+    call: StreamingToolCall,
+    fragment: string
+  ): void {
+    if (endpoint === "chat") {
+      this.chatChunk(id, model, {
+        tool_calls: [{ index: call.ordinal, function: { arguments: fragment } }]
+      });
+      return;
+    }
+    if (endpoint === "responses") {
+      this.writeEvent("response.function_call_arguments.delta", {
+        type: "response.function_call_arguments.delta",
+        item_id: `fc_${call.callId}`,
+        output_index: this.outputIndexForTool(call.callId),
+        delta: fragment
+      });
+    }
+  }
+
+  completed(
+    endpoint: TextEndpoint,
+    id: string,
+    model: string | undefined,
+    result: StreamCompletion,
+    includeUsage = false
+  ): void {
+    const promptTokens = result.usage.promptTokens ?? 0;
+    const completionTokens = result.usage.completionTokens ?? 0;
+
+    if (endpoint === "chat") {
+      this.chatChunk(id, model, {}, result.finishReason);
+      // Only when the client opted in: real OpenAI omits this chunk otherwise,
+      // and plenty of client code reads choices[0] without guarding.
+      if (includeUsage) {
+        this.writeData({
+          id,
+          object: "chat.completion.chunk",
+          created: nowSeconds(),
+          model,
+          choices: [],
+          usage: {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens
+          }
+        });
+      }
       return;
     }
     if (endpoint === "completions") {
-      this.completionChunk(id, model, "", "stop");
+      this.completionChunk(id, model, "", result.finishReason);
       return;
     }
+
+    // Emit in output_index order so the announced indices match the positions
+    // of the items in the `output` array below.
+    const items: Array<{ index: number; emit: () => Record<string, unknown> }> = [];
+
+    if (this.responseTextStarted) {
+      const textIndex = this.textOutputIndex ?? 0;
+      items.push({
+        index: textIndex,
+        emit: () => {
+          this.writeEvent("response.output_text.done", {
+            type: "response.output_text.done",
+            item_id: this.responseItemId,
+            output_index: textIndex,
+            content_index: 0,
+            text: result.text
+          });
+          this.writeEvent("response.content_part.done", {
+            type: "response.content_part.done",
+            item_id: this.responseItemId,
+            output_index: textIndex,
+            content_index: 0,
+            part: { type: "output_text", text: result.text, annotations: [] }
+          });
+          const messageItem = {
+            id: this.responseItemId,
+            type: "message",
+            status: "completed",
+            role: "assistant",
+            content: [{ type: "output_text", text: result.text, annotations: [] }]
+          };
+          this.writeEvent("response.output_item.done", {
+            type: "response.output_item.done",
+            output_index: textIndex,
+            item: messageItem
+          });
+          return messageItem;
+        }
+      });
+    }
+
+    for (const call of result.toolCalls) {
+      const callIndex = this.outputIndexForTool(call.callId);
+      items.push({
+        index: callIndex,
+        emit: () => {
+          this.writeEvent("response.function_call_arguments.done", {
+            type: "response.function_call_arguments.done",
+            item_id: `fc_${call.callId}`,
+            output_index: callIndex,
+            arguments: call.arguments
+          });
+          const callItem = {
+            id: `fc_${call.callId}`,
+            type: "function_call",
+            status: "completed",
+            call_id: call.callId,
+            name: call.name,
+            arguments: call.arguments
+          };
+          this.writeEvent("response.output_item.done", {
+            type: "response.output_item.done",
+            output_index: callIndex,
+            item: callItem
+          });
+          return callItem;
+        }
+      });
+    }
+
+    items.sort((left, right) => left.index - right.index);
+    const output = items.map((item) => item.emit());
+
     this.writeEvent("response.completed", {
       type: "response.completed",
       response: {
@@ -1129,7 +1690,9 @@ class SseWriter {
         created_at: nowSeconds(),
         status: "completed",
         model,
-        output: []
+        output_text: result.text,
+        output,
+        usage: toResponsesUsage(promptTokens, completionTokens)
       }
     });
   }
@@ -1140,7 +1703,17 @@ class SseWriter {
     }
   }
 
-  error(message: string): void {
+  /** Keeps intermediaries from timing out a stream that is merely slow. */
+  comment(text: string): void {
+    this.writeRaw(`: ${text}\n\n`);
+  }
+
+  error(endpoint: TextEndpoint, message: string): void {
+    if (endpoint === "responses") {
+      // The Responses error event is flat; the Chat shape would lose the text.
+      this.writeEvent("error", { type: "error", code: null, message, param: null });
+      return;
+    }
     this.writeEvent("error", { type: "error", error: { message } });
   }
 
@@ -1164,19 +1737,14 @@ class SseWriter {
   }
 
   private writeEvent(event: string, payload: Record<string, unknown>): void {
-    this.writeRaw(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    this.sequenceNumber += 1;
+    const enriched = { ...payload, sequence_number: this.sequenceNumber };
+    this.writeRaw(`event: ${event}\ndata: ${JSON.stringify(enriched)}\n\n`);
   }
 
   private writeRaw(value: string): void {
     this.controller.enqueue(this.encoder.encode(value));
   }
-}
-
-function readAnthropicStreamText(payload: Record<string, unknown>): string | undefined {
-  if (payload.type !== "content_block_delta" || !isRecord(payload.delta)) {
-    return undefined;
-  }
-  return typeof payload.delta.text === "string" ? payload.delta.text : undefined;
 }
 
 function mapAnthropicFinish(reason: string | undefined): string | null {

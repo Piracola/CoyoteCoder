@@ -47,6 +47,16 @@ The API provider panel supports multiple saved providers:
 
 The downstream client still points to CoyoteCoder's OpenAI-compatible `/v1` base URL. CoyoteCoder converts `/v1/chat/completions` and `/v1/responses` to Anthropic or Gemini format when those protocols are selected.
 
+## Native Anthropic Clients
+
+Clients that speak Anthropic's own API (Claude Code among them) call `POST /v1/messages`. CoyoteCoder passes that through to an Anthropic upstream **and** derives feedback events from it, so those clients get the same feedback as OpenAI-compatible ones. Point them at:
+
+```text
+http://127.0.0.1:8787
+```
+
+Note this path is a pass-through, not a translation: `/v1/messages` requires an Anthropic upstream. A client speaking Anthropic format against an OpenAI or Gemini upstream is not supported.
+
 Model discovery is exposed through the same downstream base URL:
 
 ```text
@@ -64,10 +74,11 @@ If the downstream client sends an API key in `Authorization`, `x-api-key`, `x-go
 - `/v1/*` requests are proxied to the configured upstream.
 - `/v1/models` returns the selected upstream provider's model list in an OpenAI-compatible shape.
 - `/v1/models/:model` returns a selected model in an OpenAI-compatible shape when the upstream supports model lookup.
-- `/v1/chat/completions`, `/v1/responses`, and `/v1/completions` emit Coyote events.
+- `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`, and Gemini's `…:generateContent` paths emit Coyote events.
 - OpenAI-compatible upstreams are relayed without changing the stream format.
-- Anthropic and Gemini upstreams are translated back into OpenAI-compatible JSON or SSE responses for the downstream client.
+- Anthropic and Gemini upstreams are translated back into OpenAI-compatible JSON or SSE responses for the downstream client, including tool calls, finish reasons, and usage.
 - Gemini upstreams support `/v1/embeddings` translation.
+- Image, audio, and file content parts are dropped when translating to Anthropic or Gemini; a visible placeholder is substituted so the omission is not silent.
 - Shock plans remain dry-run by default.
 
 Useful checks:
@@ -82,8 +93,8 @@ Invoke-RestMethod http://127.0.0.1:8787/events/recent
 
 | Client | Status | Notes |
 | --- | --- | --- |
-| Codex | Pending real-client verification | Set OpenAI-compatible base URL to `http://127.0.0.1:8787/v1`. |
-| Claude Code | Pending real-client verification | Use OpenAI-compatible provider settings if available. |
+| Codex | Pending real-client verification | Set OpenAI-compatible base URL to `http://127.0.0.1:8787/v1`. Uses `/v1/responses`. |
+| Claude Code | Pending real-client verification | Native path: set `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` with an Anthropic upstream selected. Feedback events now come from `/v1/messages`. |
 | OpenCode | Pending real-client verification | Use OpenAI-compatible provider settings if available. |
 | Desktop OpenAI-compatible clients | Expected compatible | Supports browser preflight and desktop-style origins such as `app://...`. |
 | LiteLLM downstream clients | Expected compatible | Point client to CoyoteCoder, then point CoyoteCoder upstream to LiteLLM if needed. |

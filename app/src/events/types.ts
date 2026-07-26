@@ -45,6 +45,8 @@ export interface RequestBodySeenEvent extends BaseEvent {
   bytes: number;
   stream: boolean;
   endpoint: string;
+  /** Only populated when privacy.store_raw_content is explicitly enabled. */
+  rawBody?: string;
 }
 
 export interface ResponseChunkEvent extends BaseEvent {
@@ -66,6 +68,8 @@ export interface ResponseDoneEvent extends BaseEvent {
   totalTokens?: number;
   estimatedTokens?: boolean;
   finishReason?: string;
+  /** Only populated when privacy.store_raw_content is explicitly enabled. */
+  rawResponse?: string;
 }
 
 export interface ResponseToolCallEvent extends BaseEvent {

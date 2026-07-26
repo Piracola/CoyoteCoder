@@ -7,7 +7,7 @@ import type { ResponseChunkEvent } from "../events/types.js";
 import { shortId } from "../util/ids.js";
 import { registerControlRoutes } from "../api/controlRoutes.js";
 import { SseParser } from "./sse.js";
-import { UpstreamClient } from "./upstream.js";
+import { UpstreamClient, UpstreamRequestError } from "./upstream.js";
 
 export function buildServer(context: CoyoteAppContext): FastifyInstance {
   const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
@@ -57,7 +57,7 @@ export function buildServer(context: CoyoteAppContext): FastifyInstance {
     events: context.bus.getRecent()
   }));
 
-  registerControlRoutes(app, context.bus, context.safety);
+  registerControlRoutes(app, context);
   registerDglabRoutes(app, context.dglab);
   registerShockRoutes(app, context.shockPlans);
   registerUiRoutes(app, context);
@@ -99,7 +99,7 @@ async function handleProxyRequest(
   const query = request.url.includes("?") ? `?${request.url.split("?").slice(1).join("?")}` : "";
   const body = serializeRequestBody(request.body);
   const bodyInfo = inspectRequestBody(body);
-  const knownEventEndpoint = path === "/v1/chat/completions" || path === "/v1/responses" || path === "/v1/completions";
+  const knownEventEndpoint = isEventEndpoint(path);
 
   if (knownEventEndpoint) {
     context.bus.emit({
@@ -115,7 +115,8 @@ async function handleProxyRequest(
       model: bodyInfo.model,
       bytes: body?.byteLength ?? 0,
       stream: bodyInfo.stream,
-      endpoint: path
+      endpoint: path,
+      rawBody: captureRawContent(context, body?.toString("utf8"))
     });
   }
 
@@ -154,7 +155,17 @@ async function handleProxyRequest(
     const contentType = upstreamResponse.headers.get("content-type") ?? "";
     const isSse = contentType.includes("text/event-stream");
     if (isSse && upstreamResponse.body) {
-      await relaySse(upstreamResponse, reply, context, requestId, bodyInfo.model, startedAt, knownEventEndpoint, abortController.signal);
+      await relaySse(
+        upstreamResponse,
+        reply,
+        context,
+        requestId,
+        bodyInfo.model,
+        startedAt,
+        knownEventEndpoint,
+        abortController.signal,
+        context.config.upstream.stream_idle_timeout_ms
+      );
       return;
     }
 
@@ -183,7 +194,12 @@ async function handleProxyRequest(
       });
     }
     if (!reply.sent) {
-      reply.code(502).send({ error: "upstream_error", message });
+      // A malformed client body is the client's fault, not the upstream's.
+      const badRequest = error instanceof UpstreamRequestError;
+      reply.code(badRequest ? 400 : 502).send({
+        error: badRequest ? "invalid_request" : "upstream_error",
+        message
+      });
     }
   } finally {
     request.raw.off("aborted", abort);
@@ -199,7 +215,8 @@ async function relaySse(
   model: string | undefined,
   startedAt: number,
   emitEvents: boolean,
-  signal: AbortSignal
+  signal: AbortSignal,
+  idleTimeoutMs: number
 ): Promise<void> {
   const parser = new SseParser();
   const reader = upstreamResponse.body?.getReader();
@@ -216,6 +233,9 @@ async function relaySse(
   let finishReason: string | undefined;
   let toolCallEmitted = false;
   let abortEmitted = false;
+  // Only accumulated when the debug capture setting is on.
+  const captureRaw = context.config.privacy.store_raw_content;
+  let rawText = "";
 
   const emitAborted = (message = "downstream client disconnected") => {
     if (!emitEvents || abortEmitted) {
@@ -231,7 +251,39 @@ async function relaySse(
     });
   };
 
-  reply.raw.flushHeaders?.();
+  // Writing through reply.raw bypasses Fastify's header materialization, so
+  // without this the client receives a stream with no content-type at all.
+  // Guarded: a throw here would otherwise leave the upstream reader dangling.
+  try {
+    writeStreamHead(reply);
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+
+  /**
+   * Guards against an upstream that accepts the request and then goes silent.
+   * The connect timeout only covers time-to-first-byte, so a mid-stream hang
+   * would otherwise block until the OS gives up on the socket.
+   */
+  const readChunk = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+    if (idleTimeoutMs <= 0) {
+      return reader.read();
+    }
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("upstream stream idle timeout")), idleTimeoutMs);
+        })
+      ]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  };
 
   try {
     while (true) {
@@ -242,7 +294,7 @@ async function relaySse(
         return;
       }
 
-      const { done, value } = await reader.read();
+      const { done, value } = await readChunk();
       if (done) break;
       if (signal.aborted) {
         await reader.cancel().catch(() => undefined);
@@ -268,6 +320,9 @@ async function relaySse(
         outputTokens = metadata.outputTokens ?? outputTokens;
         totalTokens = metadata.totalTokens ?? totalTokens;
         finishReason = metadata.finishReason ?? finishReason;
+        if (captureRaw && rawText.length < RAW_CONTENT_LIMIT) {
+          rawText += event.data;
+        }
         if (!toolCallEmitted && metadata.toolCallCount > 0) {
           toolCallEmitted = true;
           context.bus.emit({
@@ -279,7 +334,10 @@ async function relaySse(
             toolNames: metadata.toolNames.length > 0 ? metadata.toolNames : undefined
           });
         }
-        const chars = event.data.length;
+        // Pace on the generated text, not the SSE JSON envelope. An envelope is
+        // ~120 chars around a 3-char token and its size varies per protocol,
+        // which would otherwise dominate the intensity curve.
+        const chars = metadata.parsed ? metadata.outputChars : event.data.length;
         cumulativeChars += chars;
         const chunkEvent: ResponseChunkEvent = {
           type: "response.chunk",
@@ -320,7 +378,7 @@ async function relaySse(
             toolNames: metadata.toolNames.length > 0 ? metadata.toolNames : undefined
           });
         }
-        const chars = event.data.length;
+        const chars = metadata.parsed ? metadata.outputChars : event.data.length;
         cumulativeChars += chars;
         context.bus.emit({
           type: "response.chunk",
@@ -360,13 +418,17 @@ async function relaySse(
           outputTokens: inferredOutputTokens,
           totalTokens,
           estimatedTokens: outputTokens === undefined,
-          finishReason
+          finishReason,
+          rawResponse: captureRawContent(context, rawText)
         });
       }
     }
     safeEnd(reply);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeDiagnosticMessage(error instanceof Error ? error.message : String(error));
+    // Release the upstream connection; without this a client that walked away
+    // leaves the provider streaming (and billing) into a dead socket.
+    await reader.cancel().catch(() => undefined);
     if (signal.aborted || isAbortError(error)) {
       emitAborted(message);
       safeEnd(reply);
@@ -385,10 +447,71 @@ async function relaySse(
   }
 }
 
+const RAW_CONTENT_LIMIT = 4000;
+
+/**
+ * Opt-in debug capture. Off by default: the proxy otherwise records only
+ * counts and timings, never prompt or completion text.
+ */
+function captureRawContent(context: CoyoteAppContext, text: string | undefined): string | undefined {
+  if (!context.config.privacy.store_raw_content || !text) {
+    return undefined;
+  }
+  const sanitized = sanitizeDiagnosticMessageUnbounded(text);
+  return sanitized.length > RAW_CONTENT_LIMIT ? `${sanitized.slice(0, RAW_CONTENT_LIMIT)}…[truncated]` : sanitized;
+}
+
+const OPENAI_EVENT_PATHS = new Set(["/v1/chat/completions", "/v1/responses", "/v1/completions"]);
+
+/**
+ * Endpoints worth deriving feedback from. This deliberately covers native
+ * Anthropic and Gemini ingress too: Claude Code talks to /v1/messages, and
+ * without it that client produces no feedback at all.
+ */
+function isEventEndpoint(path: string): boolean {
+  if (OPENAI_EVENT_PATHS.has(path)) {
+    return true;
+  }
+  if (path === "/v1/messages") {
+    return true;
+  }
+  // Gemini native: /v1beta/models/<model>:generateContent | :streamGenerateContent
+  return /:(?:stream)?generateContent$/i.test(path);
+}
+
 function safeEnd(reply: FastifyReply): void {
   if (!reply.raw.destroyed && !reply.raw.writableEnded) {
     reply.raw.end();
   }
+}
+
+/**
+ * Materializes the headers collected via reply.header() onto the raw socket.
+ * Fastify normally does this inside reply.send(), which a hijacked stream
+ * never calls.
+ */
+function writeStreamHead(reply: FastifyReply): void {
+  if (reply.raw.headersSent) {
+    return;
+  }
+
+  const headers: Record<string, number | string | string[]> = {};
+  for (const [key, value] of Object.entries(reply.getHeaders())) {
+    if (value !== undefined) {
+      headers[key] = value as number | string | string[];
+    }
+  }
+
+  if (!headers["content-type"]) {
+    headers["content-type"] = "text/event-stream; charset=utf-8";
+  }
+  // Proxies and browsers must not buffer or reuse a live event stream.
+  headers["cache-control"] = "no-cache, no-transform";
+  headers.connection = "keep-alive";
+  headers["x-accel-buffering"] = "no";
+
+  reply.raw.writeHead(reply.statusCode, headers);
+  reply.raw.flushHeaders?.();
 }
 
 function isAbortError(error: unknown): boolean {
@@ -434,6 +557,8 @@ interface FinalResponseInput {
 
 interface ResponseMetadata {
   outputChars: number;
+  /** False when the frame was not JSON, so callers can fall back to raw size. */
+  parsed: boolean;
   outputTokens?: number;
   totalTokens?: number;
   finishReason?: string;
@@ -483,22 +608,30 @@ function emitFinalResponseEvents(context: CoyoteAppContext, input: FinalResponse
     outputTokens,
     totalTokens: metadata.totalTokens,
     estimatedTokens: metadata.outputTokens === undefined,
-    finishReason: metadata.finishReason
+    finishReason: metadata.finishReason,
+    rawResponse: captureRawContent(context, input.bodyText)
   });
 }
 
 function inspectResponseMetadata(text: string): ResponseMetadata {
   const payload = safeJson(text);
   if (!isRecord(payload)) {
-    return { outputChars: 0, toolCallCount: 0, toolNames: [] };
+    return { outputChars: 0, parsed: false, toolCallCount: 0, toolNames: [] };
   }
 
   const usage = isRecord(payload.usage) ? payload.usage : undefined;
+  // Gemini reports token counts under usageMetadata instead of usage.
+  const usageMetadata = isRecord(payload.usageMetadata) ? payload.usageMetadata : undefined;
   const toolNames: string[] = [];
   return {
     outputChars: extractOutputTextChars(payload),
-    outputTokens: usage ? readFirstNumber(usage, ["completion_tokens", "output_tokens", "completionTokens", "outputTokens"]) : undefined,
-    totalTokens: usage ? readFirstNumber(usage, ["total_tokens", "totalTokens"]) : undefined,
+    parsed: true,
+    outputTokens:
+      (usage ? readFirstNumber(usage, ["completion_tokens", "output_tokens", "completionTokens", "outputTokens"]) : undefined) ??
+      (usageMetadata ? readFirstNumber(usageMetadata, ["candidatesTokenCount"]) : undefined),
+    totalTokens:
+      (usage ? readFirstNumber(usage, ["total_tokens", "totalTokens"]) : undefined) ??
+      (usageMetadata ? readFirstNumber(usageMetadata, ["totalTokenCount"]) : undefined),
     finishReason: readFinishReason(payload),
     toolCallCount: countToolCalls(payload, toolNames),
     toolNames: [...new Set(toolNames)],
@@ -520,9 +653,13 @@ function extractOutputTextChars(payload: Record<string, unknown>): number {
       chars += readContentChars(choice.text);
       if (isRecord(choice.message)) {
         chars += readContentChars(choice.message.content);
+        chars += readToolArgumentChars(choice.message.tool_calls);
       }
       if (isRecord(choice.delta)) {
         chars += readContentChars(choice.delta.content);
+        // Reasoning models (DeepSeek R1, Qwen) stream here instead.
+        chars += readContentChars(choice.delta.reasoning_content);
+        chars += readToolArgumentChars(choice.delta.tool_calls);
       }
     }
   }
@@ -534,7 +671,60 @@ function extractOutputTextChars(payload: Record<string, unknown>): number {
   if (Array.isArray(payload.content)) {
     chars += readContentChars(payload.content);
   }
+  // Anthropic streaming: {type:"content_block_delta", delta:{type:"text_delta", text}}
+  if (isRecord(payload.delta) && typeof payload.delta.text === "string") {
+    chars += payload.delta.text.length;
+  }
+  // Work an agent does is often mostly tool arguments and thinking. Counting
+  // only plain text would flatten the feedback through exactly the phase this
+  // product exists to convey.
+  if (isRecord(payload.delta)) {
+    if (typeof payload.delta.partial_json === "string") {
+      chars += payload.delta.partial_json.length;
+    }
+    if (typeof payload.delta.thinking === "string") {
+      chars += payload.delta.thinking.length;
+    }
+  }
+  // Responses: {type:"response.function_call_arguments.delta", delta:"..."}
+  if (typeof payload.delta === "string" && typeof payload.type === "string" && payload.type.includes("function_call_arguments")) {
+    chars += payload.delta.length;
+  }
+  if (typeof payload.arguments === "string" && payload.type === "function_call") {
+    chars += payload.arguments.length;
+  }
+  // Anthropic content_block_start with an initial text block.
+  if (isRecord(payload.content_block) && typeof payload.content_block.text === "string") {
+    chars += payload.content_block.text.length;
+  }
+  // Gemini: {candidates:[{content:{parts:[{text}]}}]}
+  if (Array.isArray(payload.candidates)) {
+    for (const candidate of payload.candidates.filter(isRecord)) {
+      if (isRecord(candidate.content) && Array.isArray(candidate.content.parts)) {
+        chars += readContentChars(candidate.content.parts);
+        for (const part of candidate.content.parts.filter(isRecord)) {
+          if (isRecord(part.functionCall)) {
+            chars += JSON.stringify(part.functionCall.args ?? {}).length;
+          }
+        }
+      }
+    }
+  }
 
+  return chars;
+}
+
+/** Streamed tool arguments are output too, and often the bulk of an agent turn. */
+function readToolArgumentChars(toolCalls: unknown): number {
+  if (!Array.isArray(toolCalls)) {
+    return 0;
+  }
+  let chars = 0;
+  for (const call of toolCalls.filter(isRecord)) {
+    if (isRecord(call.function) && typeof call.function.arguments === "string") {
+      chars += call.function.arguments.length;
+    }
+  }
   return chars;
 }
 
@@ -571,6 +761,17 @@ function readFinishReason(payload: Record<string, unknown>): string | undefined 
       }
     }
   }
+  // Anthropic streaming carries it on message_delta.delta.stop_reason.
+  if (isRecord(payload.delta) && typeof payload.delta.stop_reason === "string") {
+    return payload.delta.stop_reason;
+  }
+  if (Array.isArray(payload.candidates)) {
+    for (const candidate of payload.candidates.filter(isRecord)) {
+      if (typeof candidate.finishReason === "string") {
+        return candidate.finishReason;
+      }
+    }
+  }
   return undefined;
 }
 
@@ -597,9 +798,14 @@ function countToolCalls(value: unknown, toolNames: string[]): number {
     count += 1;
     collectToolName(value, toolNames);
   }
+  // Gemini function calls arrive as a part rather than a typed block.
+  if (isRecord(value.functionCall)) {
+    count += 1;
+    collectToolName(value.functionCall, toolNames);
+  }
 
   for (const [key, nested] of Object.entries(value)) {
-    if (key === "tool_calls" || key === "function_call") {
+    if (key === "tool_calls" || key === "function_call" || key === "functionCall") {
       continue;
     }
     count += countToolCalls(nested, toolNames);
@@ -680,10 +886,14 @@ function requestedCorsHeaders(request: FastifyRequest): string | undefined {
 }
 
 function sanitizeDiagnosticMessage(message: string): string {
+  return sanitizeDiagnosticMessageUnbounded(message).slice(0, 500);
+}
+
+/** Credential redaction without the diagnostic length cap. */
+function sanitizeDiagnosticMessageUnbounded(message: string): string {
   return message
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
-    .replace(/(api[_-]?key|x-api-key|x-goog-api-key)([\"'\s:=]+)[^\"'\s,}]+/gi, "$1$2[redacted]")
-    .slice(0, 500);
+    .replace(/(api[_-]?key|x-api-key|x-goog-api-key)([\"'\s:=]+)[^\"'\s,}]+/gi, "$1$2[redacted]");
 }
 
 function copyResponseHeaders(upstreamResponse: Response, reply: FastifyReply): void {

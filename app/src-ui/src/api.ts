@@ -5,6 +5,8 @@ export interface PulsePolicy {
   channel: Channel;
   coefficient: number;
   durationMs: number;
+  /** Only meaningful on responseDone. */
+  tokenTarget?: number;
   waveformId?: string | null;
 }
 
@@ -16,6 +18,12 @@ export interface ChunkPolicy {
   waveformId?: string | null;
 }
 
+export interface WaveformPreview {
+  /** Pulse amplitude per 25ms slot, 0-100. */
+  amplitude: number[];
+  frequency: number[];
+}
+
 export interface WaveformSummary {
   id: string;
   name: string;
@@ -23,6 +31,14 @@ export interface WaveformSummary {
   fileName?: string;
   sampleCount: number;
   durationMs: number;
+  preview?: WaveformPreview;
+}
+
+export interface LanCandidate {
+  address: string;
+  interfaceName: string;
+  score: number;
+  likelyVirtual: boolean;
 }
 
 export interface WaveformState {
@@ -53,9 +69,21 @@ export interface UiState {
     armed: boolean;
     panic?: boolean;
     channelLimits: Record<Channel, number>;
+    /** Config limit intersected with the device-reported soft limit. */
+    effectiveLimits?: Record<Channel, number>;
+    deviceSoftLimits?: Record<Channel, number>;
     maxContinuousOutputMs: number;
     maxEventsPerMinute: number;
     recentEventsInWindow?: number;
+    maxIntensityStep?: number;
+    minIntervalMs?: number;
+    maxSessionMs?: number;
+    idleDisarmMs?: number;
+    armedForMs?: number;
+    sessionRemainingMs?: number;
+    idleRemainingMs?: number;
+    lastIntensity?: Record<Channel, number>;
+    lastBlockReason?: string;
   };
   policy: {
     requestStarted: PulsePolicy;
@@ -74,9 +102,15 @@ export interface UiState {
     socketUrl?: string;
     qrLink?: string;
     lastError?: string;
-    strengths?: Record<Channel, number>;
+    strengths?: {
+      A: number;
+      B: number;
+      softLimitA: number;
+      softLimitB: number;
+    };
   };
   waveforms: WaveformState;
+  lanCandidates?: LanCandidate[];
   testShock?: {
     outcome: "sent" | "blocked" | "error";
     dryRun: boolean;
@@ -155,6 +189,10 @@ export interface SettingsDraft {
     channelLimits: Record<Channel, number>;
     maxContinuousOutputMs: number;
     maxEventsPerMinute: number;
+    maxIntensityStep: number;
+    minIntervalMs: number;
+    maxSessionMs: number;
+    idleDisarmMs: number;
   };
   policy: UiState["policy"];
 }
@@ -185,6 +223,70 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw new Error(payload?.error ?? payload?.message ?? `请求失败: ${response.status}`);
   }
   return payload as T;
+}
+
+export interface StreamHandlers {
+  onState: (state: UiState) => void;
+  onEvent: (event: RuntimeEvent) => void;
+  onStatusChange: (connected: boolean) => void;
+}
+
+/**
+ * Subscribes to the console's live feed. Falls back to nothing if the browser
+ * cannot open the stream; callers keep a slow poll as a safety net.
+ *
+ * Returns an unsubscribe function.
+ */
+export function subscribeToUiStream(handlers: StreamHandlers): () => void {
+  let source: EventSource | null = null;
+  let retryTimer: number | undefined;
+  let closed = false;
+  let retryDelayMs = 1000;
+
+  const connect = () => {
+    if (closed) return;
+    source = new EventSource(apiUrl("/ui/stream"));
+
+    source.addEventListener("open", () => {
+      retryDelayMs = 1000;
+      handlers.onStatusChange(true);
+    });
+
+    source.addEventListener("state", (message) => {
+      try {
+        handlers.onState(JSON.parse((message as MessageEvent<string>).data) as UiState);
+      } catch {
+        // A malformed frame should not tear the stream down.
+      }
+    });
+
+    source.addEventListener("event", (message) => {
+      try {
+        handlers.onEvent(JSON.parse((message as MessageEvent<string>).data) as RuntimeEvent);
+      } catch {
+        // ignore
+      }
+    });
+
+    source.addEventListener("error", () => {
+      handlers.onStatusChange(false);
+      source?.close();
+      source = null;
+      if (closed) return;
+      // EventSource retries on its own, but only for some failure modes;
+      // reconnecting explicitly with backoff covers the rest.
+      retryTimer = window.setTimeout(connect, retryDelayMs);
+      retryDelayMs = Math.min(15000, retryDelayMs * 2);
+    });
+  };
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (retryTimer) window.clearTimeout(retryTimer);
+    source?.close();
+  };
 }
 
 export async function getRunInBackground(): Promise<boolean> {
@@ -230,7 +332,11 @@ export function settingsFromState(state: UiState): SettingsDraft {
         B: state.safety.channelLimits.B
       },
       maxContinuousOutputMs: state.safety.maxContinuousOutputMs,
-      maxEventsPerMinute: state.safety.maxEventsPerMinute
+      maxEventsPerMinute: state.safety.maxEventsPerMinute,
+      maxIntensityStep: state.safety.maxIntensityStep ?? 0.2,
+      minIntervalMs: state.safety.minIntervalMs ?? 150,
+      maxSessionMs: state.safety.maxSessionMs ?? 1_800_000,
+      idleDisarmMs: state.safety.idleDisarmMs ?? 300_000
     },
     policy: {
       requestStarted: { ...state.policy.requestStarted },

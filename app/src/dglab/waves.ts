@@ -42,6 +42,8 @@ export interface DglabWaveformCatalog {
   errors: WaveformLoadError[];
 }
 
+const DEFAULT_CATALOG_TTL_MS = 300_000;
+
 export class WaveformRegistry {
   private catalog?: DglabWaveformCatalog;
   private loadedAt = 0;
@@ -51,7 +53,10 @@ export class WaveformRegistry {
   ) {}
 
   async getCatalog(force = false): Promise<DglabWaveformCatalog> {
-    const ttlMs = this.options.ttlMs ?? 2000;
+    // This sits on the output hot path: a short TTL meant re-reading every
+    // waveform file from disk roughly twice a second during streaming. The
+    // console's explicit refresh is what picks up newly added files.
+    const ttlMs = this.options.ttlMs ?? DEFAULT_CATALOG_TTL_MS;
     if (!force && this.catalog && Date.now() - this.loadedAt < ttlMs) {
       return this.catalog;
     }
@@ -93,6 +98,9 @@ export async function loadDglabWaveforms(directories = defaultWaveformDirectorie
           continue;
         }
         for (const item of parsed) {
+          if (item.warning) {
+            errors.push({ directory, fileName: entry.name, message: item.warning });
+          }
           const baseId = slugify(`${entry.name}-${item.name}`);
           const id = uniqueId(baseId, usedIds);
           usedIds.add(id);
@@ -194,14 +202,22 @@ async function directoryExists(path: string): Promise<boolean> {
   }
 }
 
-function parseWaveformContent(content: string, fileName: string): Array<{ name: string; waves: string[] }> {
+interface ParsedWaveform {
+  name: string;
+  waves: string[];
+  /** Set when samples were rejected or truncated, so the console can say so. */
+  warning?: string;
+}
+
+function parseWaveformContent(content: string, fileName: string): ParsedWaveform[] {
   const parsed = parseJsonLike(content);
   if (parsed !== undefined) {
     return parseWaveformValue(parsed, fileName);
   }
 
   const waves = normalizeWaves(content.match(/\b[0-9a-fA-F]{16}\b/g) ?? []);
-  return waves.length > 0 ? [{ name: nameFromFile(fileName), waves }] : [];
+  const name = nameFromFile(fileName);
+  return waves.length > 0 ? [{ name, waves, warning: takeNormalizationWarning(fileName, name) }] : [];
 }
 
 function parseJsonLike(content: string): unknown {
@@ -225,11 +241,12 @@ function parseJsonLike(content: string): unknown {
   return undefined;
 }
 
-function parseWaveformValue(value: unknown, fileName: string): Array<{ name: string; waves: string[] }> {
+function parseWaveformValue(value: unknown, fileName: string): ParsedWaveform[] {
   if (Array.isArray(value)) {
     const waves = normalizeWaves(value);
     if (waves.length > 0) {
-      return [{ name: nameFromFile(fileName), waves }];
+      const name = nameFromFile(fileName);
+      return [{ name, waves, warning: takeNormalizationWarning(fileName, name) }];
     }
     return value.flatMap((item, index) => parseWaveformObject(item, fileName, index));
   }
@@ -237,7 +254,7 @@ function parseWaveformValue(value: unknown, fileName: string): Array<{ name: str
   return parseWaveformObject(value, fileName, 0);
 }
 
-function parseWaveformObject(value: unknown, fileName: string, index: number): Array<{ name: string; waves: string[] }> {
+function parseWaveformObject(value: unknown, fileName: string, index: number): ParsedWaveform[] {
   if (!isRecord(value)) {
     return [];
   }
@@ -247,12 +264,14 @@ function parseWaveformObject(value: unknown, fileName: string, index: number): A
     return [];
   }
 
-  return [
-    {
-      name: typeof value.name === "string" && value.name.trim() ? value.name.trim() : index === 0 ? nameFromFile(fileName) : `${nameFromFile(fileName)} ${index + 1}`,
-      waves
-    }
-  ];
+  const name =
+    typeof value.name === "string" && value.name.trim()
+      ? value.name.trim()
+      : index === 0
+        ? nameFromFile(fileName)
+        : `${nameFromFile(fileName)} ${index + 1}`;
+
+  return [{ name, waves, warning: takeNormalizationWarning(fileName, name) }];
 }
 
 function readWaveArray(value: Record<string, unknown>): string[] {
@@ -265,17 +284,44 @@ function readWaveArray(value: Record<string, unknown>): string[] {
   return [];
 }
 
+/** Counts of samples rejected during the most recent normalizeWaves call. */
+interface WaveNormalizationStats {
+  invalid: number;
+  truncated: number;
+}
+
+let lastNormalizationStats: WaveNormalizationStats = { invalid: 0, truncated: 0 };
+
 function normalizeWaves(value: unknown): string[] {
+  lastNormalizationStats = { invalid: 0, truncated: 0 };
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const waves = value
+  const candidates = value
     .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim().toUpperCase())
-    .filter((item) => /^[0-9A-F]{16}$/.test(item));
+    .map((item) => item.trim().toUpperCase());
+  const waves = candidates.filter((item) => /^[0-9A-F]{16}$/.test(item));
+
+  lastNormalizationStats.invalid = candidates.length - waves.length;
+  lastNormalizationStats.truncated = Math.max(0, waves.length - MAX_WAVE_SAMPLES);
 
   return waves.slice(0, MAX_WAVE_SAMPLES);
+}
+
+function takeNormalizationWarning(fileName: string, waveName: string): string | undefined {
+  const { invalid, truncated } = lastNormalizationStats;
+  if (invalid === 0 && truncated === 0) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  if (invalid > 0) {
+    parts.push(`${invalid} 个样本不是合法的 16 位 HEX，已忽略`);
+  }
+  if (truncated > 0) {
+    parts.push(`超出 ${MAX_WAVE_SAMPLES} 个样本上限，截断了 ${truncated} 个`);
+  }
+  return `${fileName} / ${waveName}: ${parts.join("；")}`;
 }
 
 function nameFromFile(fileName: string): string {

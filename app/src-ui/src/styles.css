@@ -1101,8 +1101,9 @@ p {
   grid-column: 1 / -1;
 }
 
+/* Auto-fit rather than fixed tracks: the 完成 editor carries one extra field. */
 .pulse-fields {
-  grid-template-columns: minmax(82px, 0.62fr) minmax(126px, 1fr) minmax(98px, 0.72fr) minmax(170px, 1.28fr);
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   align-items: end;
 }
 
@@ -1458,4 +1459,348 @@ p {
   .icon-button {
     min-height: 38px;
   }
+}
+
+/* ── Live connection indicator ─────────────────────────────────────────── */
+
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted-strong);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.live-indicator i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.live-indicator.on {
+  border-color: rgba(34, 160, 107, 0.32);
+  background: rgba(34, 160, 107, 0.09);
+  color: var(--green);
+}
+
+.live-indicator.on i {
+  background: var(--green);
+}
+
+.live-indicator.on.busy i {
+  animation: live-pulse 1s ease-in-out infinite;
+}
+
+.live-indicator.off {
+  border-color: rgba(183, 121, 31, 0.3);
+  background: rgba(183, 121, 31, 0.08);
+  color: var(--amber);
+}
+
+.live-indicator.off i {
+  background: var(--amber);
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.55);
+    opacity: 0.45;
+  }
+}
+
+/* ── Meters ────────────────────────────────────────────────────────────── */
+
+.meter {
+  display: grid;
+  gap: 5px;
+}
+
+.meter-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-strong);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--blue);
+  transition: width 220ms ease;
+}
+
+.meter-fill.ok {
+  background: linear-gradient(90deg, var(--cyan), var(--green));
+}
+
+.meter-fill.neutral {
+  background: var(--line-strong);
+}
+
+.meter-fill.danger {
+  background: var(--red);
+}
+
+.meter-limit {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--red);
+  transform: translateX(-1px);
+}
+
+.meter small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.channel-meters {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.channel-meter {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.channel-meter header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.channel-meter header strong {
+  font-size: 13px;
+}
+
+.channel-meter header em {
+  font-style: normal;
+  font-size: 19px;
+  font-weight: 850;
+  color: var(--blue-strong);
+}
+
+.channel-meter small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ── Inline hints ──────────────────────────────────────────────────────── */
+
+.inline-hint {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  border-left: 3px solid var(--line-strong);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--surface-soft);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.inline-hint.ok {
+  border-left-color: var(--green);
+  background: rgba(34, 160, 107, 0.07);
+}
+
+.inline-hint.warn {
+  border-left-color: var(--amber);
+  background: rgba(183, 121, 31, 0.07);
+}
+
+.inline-hint.danger {
+  border-left-color: var(--red);
+  background: rgba(208, 71, 66, 0.07);
+}
+
+/* ── Waveform preview ──────────────────────────────────────────────────── */
+
+.waveform-library {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.waveform-card {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.waveform-card header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.waveform-card header strong {
+  display: block;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.waveform-card header small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.waveform-chart {
+  margin: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow-x: auto;
+}
+
+.waveform-chart svg {
+  display: block;
+  width: 100%;
+  height: 56px;
+  fill: var(--blue);
+}
+
+.waveform-chart figcaption {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.waveform-chart.empty-chart {
+  display: grid;
+  place-items: center;
+  min-height: 56px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.waveform-errors {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.waveform-errors li {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--amber);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: rgba(183, 121, 31, 0.07);
+  font-size: 12px;
+}
+
+.waveform-errors strong {
+  font-size: 12px;
+}
+
+.waveform-errors span {
+  color: var(--muted-strong);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/* ── LAN candidate hint ────────────────────────────────────────────────── */
+
+.lan-hint {
+  margin-top: 10px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+  font-size: 12px;
+}
+
+.lan-hint-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-strong);
+  font-weight: 750;
+}
+
+.lan-hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-strong);
+  font-size: 11px;
+}
+
+.lan-hint details {
+  margin-top: 7px;
+}
+
+.lan-hint summary {
+  color: var(--blue-strong);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.lan-hint ul {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lan-hint li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lan-hint li small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.lan-hint p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+/* Amplified coefficients read as a deliberate choice, not a slider slip. */
+.coefficient-control.boosted .coefficient-value {
+  color: var(--red-strong);
 }

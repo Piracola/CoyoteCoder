@@ -20,7 +20,17 @@ The downstream client always talks to CoyoteCoder through an OpenAI-compatible b
 http://127.0.0.1:8787/v1
 ```
 
-The selected upstream provider can be OpenAI-compatible, Anthropic Messages, or Gemini GenerateContent. Anthropic and Gemini responses are adapted back into OpenAI-compatible JSON or SSE for the downstream client.
+The selected upstream provider can be OpenAI-compatible, Anthropic Messages, or Gemini GenerateContent. Anthropic and Gemini responses are adapted back into OpenAI-compatible JSON or SSE for the downstream client, including tool calls (streaming and non-streaming), finish reasons, and usage.
+
+## Which Endpoints Produce Feedback
+
+Events — and therefore feedback — are derived from these downstream paths:
+
+- `/v1/chat/completions`, `/v1/responses`, `/v1/completions` (OpenAI-compatible ingress)
+- `/v1/messages` (native Anthropic ingress; this is what Claude Code uses)
+- `…:generateContent` and `…:streamGenerateContent` (native Gemini ingress)
+
+Streaming intensity is paced on the **generated text**, not the SSE JSON envelope. An envelope adds roughly 120 characters around a 3-character token and its size varies per protocol, so pacing on the raw frame would let framing overhead dominate the curve.
 
 ## Main Components
 
@@ -31,7 +41,8 @@ The selected upstream provider can be OpenAI-compatible, Anthropic Messages, or 
 | Event bus | `app/src/events/` | Stores request/response lifecycle events without raw prompt logging by default. |
 | Shock policy | `app/src/shock/policy.ts` | Converts normalized events into channel plans. |
 | Safety gate | `app/src/shock/safety.ts` | Enforces dry-run, arm state, channel limits, rate limits, and panic. |
-| DG-LAB controller | `app/src/dglab/` | Talks to the official Socket V2 server when enabled. |
+| DG-LAB controller | `app/src/dglab/` | Talks to a Socket V2 server when enabled, with auto-reconnect. |
+| Socket V2 relay | `app/src/dglab/relay.ts` | Built-in relay so phone pairing works without the official backend. Binds wider than `server.host` for LAN reachability and refuses non-private origins. |
 | Waveform registry | `app/src/dglab/waves.ts` | Loads built-in and file-based DG-LAB V3 waveforms. |
 | App runtime | `app/src/app/` | Wires config, event bus, policy, safety, DG-LAB, waveforms, and Fastify. |
 | UI API routes | `app/src/api/ui/` | Serves console state, settings, provider, runtime, waveform, and static UI routes. |
@@ -45,6 +56,7 @@ The selected upstream provider can be OpenAI-compatible, Anthropic Messages, or 
 | `GET /status` | Current upstream and safety state. |
 | `GET /ui` | Local Web console. |
 | `GET /ui/state` | Web console state snapshot. |
+| `GET /ui/stream` | Live SSE feed of events plus throttled state snapshots for the console. |
 | `POST /ui/settings` | Save dry-run, Safety, policy, and waveform settings. |
 | `POST /ui/upstream` | Save, select, or delete upstream providers. |
 | `GET /ui/waveforms` | List available built-in and file waveforms. |
@@ -55,7 +67,8 @@ The selected upstream provider can be OpenAI-compatible, Anthropic Messages, or 
 | `GET /shock/recent` | Shock plan history and Safety outcomes. |
 | `POST /control/arm` | Enable armed state. |
 | `POST /control/disarm` | Disable armed state. |
-| `POST /control/panic` | Emergency stop and zero-output path. |
+| `POST /control/panic` | Emergency stop; disarms, recalls queued pulses, zeroes both channels. |
+| `POST /ui/disconnect` | Disarm, zero, and drop the DG-LAB pairing. |
 | `POST /control/dry-run` | Toggle dry-run state. |
 | `GET /dglab/status` | DG-LAB Socket V2 connection and bind state. |
 | `POST /dglab/connect` | Connect to Socket V2 server. |

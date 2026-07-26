@@ -1,5 +1,5 @@
 import type React from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   LayoutDashboard,
@@ -16,7 +16,9 @@ import {
   getRunInBackground,
   providerFromState,
   settingsFromState,
+  subscribeToUiStream,
   type ProviderDraft,
+  type RuntimeEvent,
   type SettingsDraft,
   type UiState
 } from "./api";
@@ -57,38 +59,102 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; tone: "ok" | "error" } | null>(null);
   const [qrVersion, setQrVersion] = useState(0);
   const [runInBackground, setRunInBackgroundState] = useState(false);
+  const [liveConnected, setLiveConnected] = useState(false);
+  // Sampled once a second for display. Holding this in state directly would
+  // re-render the whole view tree on every streamed token.
+  const [activityLevel, setActivityLevel] = useState(0);
+
+  // Read inside stable callbacks so editing a form does not change their
+  // identity — that would tear down and reopen the EventSource on every
+  // keystroke.
+  const providerDirtyRef = useRef(providerDirty);
+  const settingsDirtyRef = useRef(settingsDirty);
+  const liveConnectedRef = useRef(false);
+  const pulseTicksRef = useRef<number[]>([]);
+  const toastTimerRef = useRef<number | undefined>(undefined);
+
+  providerDirtyRef.current = providerDirty;
+  settingsDirtyRef.current = settingsDirty;
 
   const showToast = useCallback((message: string, tone: "ok" | "error" = "ok") => {
     setToast({ message, tone });
-    window.setTimeout(() => setToast(null), 2400);
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2400);
+  }, []);
+
+  const applyState = useCallback((next: UiState) => {
+    setState(next);
+    if (!providerDirtyRef.current) setProvider(providerFromState(next));
+    if (!settingsDirtyRef.current) setSettings(settingsFromState(next));
+    setLoading(false);
   }, []);
 
   const refresh = useCallback(
     async (quiet = false) => {
       try {
-        const next = await api<UiState>("/ui/state");
-        setState(next);
-        if (!providerDirty) setProvider(providerFromState(next));
-        if (!settingsDirty) setSettings(settingsFromState(next));
+        applyState(await api<UiState>("/ui/state"));
       } catch (error) {
         if (!quiet) showToast(error instanceof Error ? error.message : String(error), "error");
       } finally {
         setLoading(false);
       }
     },
-    [providerDirty, settingsDirty, showToast]
+    [applyState, showToast]
   );
+
+  const noteActivity = useCallback((event: RuntimeEvent) => {
+    if (event.type !== "response.chunk" && event.type !== "response.started") {
+      return;
+    }
+    pulseTicksRef.current = [...pulseTicksRef.current, Date.now()].slice(-120);
+  }, []);
+
+  const setLive = useCallback((connected: boolean) => {
+    liveConnectedRef.current = connected;
+    setLiveConnected(connected);
+  }, []);
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(true), 3000);
-    const onFocus = () => void refresh(true);
+
+    const unsubscribe = subscribeToUiStream({
+      onState: applyState,
+      onEvent: noteActivity,
+      onStatusChange: setLive
+    });
+    // Only a fallback: polling while the stream is healthy would race its
+    // pushes and can overwrite newer state with an older snapshot.
+    const fallbackTimer = window.setInterval(() => {
+      if (!liveConnectedRef.current) {
+        void refresh(true);
+      }
+    }, 15000);
+    const onFocus = () => {
+      if (!liveConnectedRef.current) {
+        void refresh(true);
+      }
+    };
     window.addEventListener("focus", onFocus);
+
     return () => {
-      window.clearInterval(timer);
+      unsubscribe();
+      window.clearInterval(fallbackTimer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refresh]);
+  }, [applyState, noteActivity, refresh, setLive]);
+
+  // Sample the rolling window once a second so the meter decays when the
+  // stream goes quiet, without rendering per event.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const cutoff = Date.now() - 5000;
+      pulseTicksRef.current = pulseTicksRef.current.filter((tick) => tick > cutoff);
+      setActivityLevel((current) => (current === pulseTicksRef.current.length ? current : pulseTicksRef.current.length));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     void getRunInBackground()
@@ -102,9 +168,7 @@ export default function App() {
       try {
         const result = await action();
         if (result) {
-          setState(result);
-          if (!providerDirty) setProvider(providerFromState(result));
-          if (!settingsDirty) setSettings(settingsFromState(result));
+          applyState(result);
         } else {
           await refresh(true);
         }
@@ -115,7 +179,7 @@ export default function App() {
         setBusy(null);
       }
     },
-    [providerDirty, refresh, settingsDirty, showToast]
+    [applyState, refresh, showToast]
   );
 
   const panic = useCallback(() => {
@@ -183,6 +247,7 @@ export default function App() {
                   <StatusPill tone={state.safety.dryRun ? "warn" : "danger"}>{outputModeLabel(state)}</StatusPill>
                   <StatusPill tone={state.safety.armed ? "ok" : "neutral"}>{state.safety.armed ? "反馈已启动" : "反馈已停止"}</StatusPill>
                   <StatusPill tone={state.dglab.bound ? "ok" : state.dglab.connected ? "warn" : "neutral"}>{dglabLinkLabel(state)}</StatusPill>
+                  <LiveIndicator connected={liveConnected} activity={activityLevel} />
                 </>
               ) : null}
               <IconButton icon={<RefreshCw size={18} />} title="刷新状态" onClick={() => void refresh()} />
@@ -241,6 +306,20 @@ export default function App() {
 
     return <EmptyBackend />;
   }
+}
+
+/**
+ * Shows whether the console is receiving the live feed, and pulses while the
+ * proxy is actively streaming so the user can see activity without reading logs.
+ */
+function LiveIndicator({ connected, activity }: { connected: boolean; activity: number }) {
+  const title = connected ? (activity > 0 ? "实时连接中 · 正在接收流式事件" : "实时连接中") : "实时连接已断开，正在使用轮询";
+  return (
+    <span className={`live-indicator ${connected ? "on" : "off"} ${activity > 0 ? "busy" : ""}`.trim()} title={title}>
+      <i />
+      <span>{connected ? "实时" : "轮询"}</span>
+    </span>
+  );
 }
 
 function EmptyBackend() {

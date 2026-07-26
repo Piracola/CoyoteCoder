@@ -2,7 +2,9 @@ import { z } from "zod";
 
 const channelSchema = z.enum(["A", "B"]);
 const upstreamProtocolSchema = z.enum(["openai", "anthropic", "gemini"]);
-const coefficientSchema = z.coerce.number().min(0).max(1).transform((value) => Math.round(value * 10) / 10);
+// Coefficients may amplify as well as attenuate; SafetyGate still clamps the result.
+const coefficientSchema = z.coerce.number().min(0).max(2).transform((value) => Math.round(value * 100) / 100);
+const intensitySchema = z.coerce.number().min(0).max(1).transform((value) => Math.round(value * 100) / 100);
 const waveformIdSchema = z.string().trim().min(1).optional();
 const objectWithDefaults = <Shape extends z.ZodRawShape>(shape: Shape) =>
   z.preprocess((value) => value ?? {}, z.object(shape));
@@ -17,6 +19,10 @@ const upstreamProviderSchema = z.object({
   timeout_ms: z.coerce.number().int().positive().default(120000)
 });
 
+// Applies to the whole upstream block rather than a single provider: it bounds
+// how long a stream may stall after headers arrive, which timeout_ms does not.
+const streamIdleTimeoutSchema = z.coerce.number().int().min(0).max(1_800_000).default(180_000);
+
 const upstreamSchema = z.preprocess(
   normalizeUpstreamConfig,
   z.object({
@@ -28,7 +34,8 @@ const upstreamSchema = z.preprocess(
     base_url: z.string().url().default("https://api.openai.com"),
     api_key: z.string().trim().optional(),
     anthropic_version: z.string().trim().min(1).default("2023-06-01"),
-    timeout_ms: z.coerce.number().int().positive().default(120000)
+    timeout_ms: z.coerce.number().int().positive().default(120000),
+    stream_idle_timeout_ms: streamIdleTimeoutSchema
   })
 );
 
@@ -49,9 +56,17 @@ export const configSchema = z.object({
       A: z.coerce.number().int().min(0).max(100).default(15),
       B: z.coerce.number().int().min(0).max(100).default(10)
     }),
-    max_continuous_output_ms: z.coerce.number().int().min(1).default(3000),
-    max_events_per_minute: z.coerce.number().int().min(1).default(120),
-    panic_zero_on_exit: z.boolean().default(true)
+    max_continuous_output_ms: z.coerce.number().int().min(1).max(30_000).default(3000),
+    max_events_per_minute: z.coerce.number().int().min(1).max(600).default(120),
+    panic_zero_on_exit: z.boolean().default(true),
+    // Largest intensity increase a single plan may apply per channel.
+    max_intensity_step: z.coerce.number().min(0.01).max(1).default(0.2),
+    // Minimum spacing between discrete (non-continuous) plans on one channel.
+    min_interval_ms: z.coerce.number().int().min(0).max(10_000).default(150),
+    // Auto-disarm ceilings; 0 disables the corresponding check.
+    max_session_ms: z.coerce.number().int().min(0).max(6 * 3_600_000).default(1_800_000),
+    idle_disarm_ms: z.coerce.number().int().min(0).max(3_600_000).default(300_000),
+    respect_device_soft_limit: z.boolean().default(true)
   }),
   policy: objectWithDefaults({
     request_started: objectWithDefaults({
@@ -69,7 +84,7 @@ export const configSchema = z.object({
     response_chunk: objectWithDefaults({
       channel: channelSchema.default("B"),
       coefficient: coefficientSchema.default(1),
-      micro_intensity: coefficientSchema.default(0.1),
+      micro_intensity: intensitySchema.default(0.1),
       duration_ms: z.coerce.number().int().positive().default(2000),
       waveform_id: waveformIdSchema
     }),
@@ -98,10 +113,14 @@ export const configSchema = z.object({
     socket_url: z.string().default("ws://127.0.0.1:9999"),
     qr_host: z.string().default("auto"),
     qr_port: z.coerce.number().int().min(1).max(65535).default(9999),
-    default_channels: objectWithDefaults({
-      request: channelSchema.default("A"),
-      response: channelSchema.default("B")
-    })
+    // Bind address for the built-in Socket V2 relay. Phone pairing needs LAN
+    // reachability, so this is deliberately wider than server.host; pin it to
+    // one interface when the machine also sits on an untrusted network.
+    relay_bind_host: z.string().trim().min(1).default("0.0.0.0"),
+    // The official DG-LAB app cannot present a shared secret, so the relay
+    // instead refuses connections from outside private address ranges.
+    relay_allow_public: z.boolean().default(false),
+    relay_max_clients: z.coerce.number().int().min(2).max(64).default(8)
   })
 });
 

@@ -15,8 +15,21 @@ export class EventBus {
     this.emitter.emit("event", event);
   }
 
-  onEvent(listener: (event: CoyoteEvent) => void): void {
+  /** Returns an unsubscribe function so short-lived consumers cannot leak. */
+  onEvent(listener: (event: CoyoteEvent) => void): () => void {
     this.emitter.on("event", listener);
+    // Console SSE clients plus the engine can exceed the default cap of 10.
+    // Re-derived on unsubscribe too, so the leak warning stays useful rather
+    // than being permanently disabled by a burst of short-lived subscribers.
+    this.syncMaxListeners();
+    return () => {
+      this.emitter.off("event", listener);
+      this.syncMaxListeners();
+    };
+  }
+
+  private syncMaxListeners(): void {
+    this.emitter.setMaxListeners(Math.max(20, this.emitter.listenerCount("event") + 10));
   }
 
   getRecent(): CoyoteEvent[] {
